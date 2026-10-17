@@ -1,0 +1,69 @@
+{
+	"name": "@hicaru/img-pi",
+	"version": "0.1.0",
+	"description": "Image and PBR texture generation extension for omp and pi",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./src/index.ts",
+	"omp": {
+		"extensions": [
+			"./dist/index.js"
+		]
+	},
+	"pi": {
+		"extensions": [
+			"./dist/index.js"
+		]
+	},
+	"peerDependencies": {
+		"@oh-my-pi/pi-coding-agent": "*",
+		"@oh-my-pi/pi-ai": "*",
+		"@oh-my-pi/pi-tui": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-tui": "*"
+	},
+	"peerDependenciesMeta": {
+		"@oh-my-pi/pi-coding-agent": {
+			"optional": true
+		},
+		"@oh-my-pi/pi-ai": {
+			"optional": true
+		},
+		"@oh-my-pi/pi-tui": {
+			"optional": true
+		},
+		"@earendil-works/pi-coding-agent": {
+			"optional": true
+		},
+		"@earendil-works/pi-ai": {
+			"optional": true
+		},
+		"@earendil-works/pi-tui": {
+			"optional": true
+		}
+	},
+	"dependencies": {
+		"arktype": "2.1.20",
+		"sharp": "0.34.2",
+		"ulid": "3.0.1"
+	},
+	"devDependencies": {
+		"@types/bun": "1.2.15",
+		"eslint": "9.28.0",
+		"eslint-plugin-boundaries": "5.0.1",
+		"prettier": "3.5.3",
+		"typescript": "5.8.3",
+		"typescript-eslint": "8.33.0"
+	},
+	"scripts": {
+		"build": "bun build src/index.ts src/workers/image.worker.ts --outdir dist --target bun --external '@oh-my-pi/*' --external '@earendil-works/*' --external sharp",
+		"typecheck": "tsc --noEmit",
+		"lint": "eslint . --max-warnings 0",
+		"fmt": "prettier --write .",
+		"test": "bun test",
+		"check": "bun run typecheck && bun run lint && bun test",
+		"link:omp": "ln -sfn \"$PWD\" ~/.omp/agent/extensions/img-pi",
+		"link:pi": "ln -sfn \"$PWD\" ~/.pi/agent/extensions/img-pi"
+	}
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.img-pi/
+generated/
+*.tgz
+*.log
+.DS_Store
+.rlm/
