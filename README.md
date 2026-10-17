@@ -20,6 +20,18 @@ Open omp or pi and ask for a picture: _"draw me a ginger cat on a windowsill"_. 
 
 `img_generate` and `img_edit` are always visible to the agent. With `compat.hideBuiltin` (default `true`), omp's built-in `generate_image` is hidden so there is one obvious image tool.
 
+## Studio (`/img`)
+
+`/img` opens an overlay for looking and configuring. It never generates; that is the agent's job.
+
+| Tab      | What you can do                                                                                                                                                                    |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Models   | See the image models your host connections provide, grouped by provider; `enter` makes one the default (or `auto`).                                                                |
+| Settings | Cycle format, preview, outside-project saving, HUD, parallel jobs…; each change is saved to `img-pi.json` at once. The first row picks the file: this project or your user config. |
+| Gallery  | Browse generated images, newest first, with an inline preview.                                                                                                                     |
+
+Keys: `←/→` or `tab` switch tabs, `↑/↓` move, `enter`/`space` select, `esc`/`q` close.
+
 ## Where files go
 
 Everything is written under `<project>/.pi/img/` on both hosts:

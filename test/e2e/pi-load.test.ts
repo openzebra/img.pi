@@ -59,10 +59,13 @@ describe("e2e: pi host harness", () => {
 		const wired = imgPiExtension(piApi);
 		expect(wired?.host.kind).toBe("pi");
 		expect(tools.size).toBe(6);
-		expect(commands).toEqual([]);
+		expect(commands).toEqual(["img"]);
 		expect(tools.get("img_generate")?.promptSnippet).toContain("img_generate");
 		expect(tools.get("img_generate")?.promptGuidelines?.length).toBeGreaterThan(0);
 		expect(tools.get("img_edit")?.promptSnippet).toContain("img_edit");
+		expect(tools.get("img_texture")?.promptSnippet).toContain("img_texture");
+		expect(tools.get("img_texture")?.promptGuidelines?.join(" ")).toContain("4K → 4096");
+		expect(tools.get("img_generate")?.promptGuidelines?.join(" ")).toContain("img_texture");
 
 		const flux = { id: "flux", name: "FLUX", provider: "openrouter", input: ["text"] };
 		const sentContexts: unknown[] = [];

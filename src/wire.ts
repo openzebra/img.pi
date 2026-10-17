@@ -1,3 +1,4 @@
+import { createImgCommand } from "./commands/img.js";
 import { ConfigStore } from "./config/store.js";
 import type { Disposer } from "./core/events.js";
 import type { HostPort, PortableCtx } from "./host/port.js";
@@ -40,8 +41,8 @@ export interface WiredExtension {
 }
 
 /**
- * Composition root. Generation is agent-driven: the extension registers tools only,
- * plus a passive HUD (status segment + queue widget). No commands, no shortcuts.
+ * Composition root. Generation is agent-driven: the agent calls the tools. The user gets a
+ * passive HUD (status segment + queue widget) and `/img` Studio for models, settings, gallery.
  */
 export function wireExtension(host: HostPort): WiredExtension {
 	const configStore = new ConfigStore({
@@ -95,6 +96,9 @@ export function wireExtension(host: HostPort): WiredExtension {
 	host.registerTool(createImgVariationsTool(toolDeps));
 	host.registerTool(createImgListModelsTool(toolDeps));
 	host.registerTool(createImgDescribeJobTool(toolDeps));
+
+	// Studio: look and configure only; generation stays with the agent's tools.
+	host.registerCommand("img", createImgCommand({ host, configStore, getPipelineDeps }));
 
 	let sessionDisposers: Disposer[] = [];
 

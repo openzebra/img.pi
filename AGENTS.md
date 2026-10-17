@@ -11,7 +11,8 @@ Rules are **MUST** unless marked otherwise. A violation blocks merge. `bun run c
 
 The product is: the user says "draw me a cat" in omp/pi, the agent calls `img_generate` itself, and the image lands in `.pi/img`. Every rule below serves that.
 
-- **Generation is agent-driven.** No slash commands, shortcuts, or overlays that generate. The extension registers tools plus a passive HUD (status segment, queue widget). Do not add commands back without an explicit product decision.
+- **Generation is agent-driven.** No slash command, shortcut, or overlay ever generates an image. The user surface is a passive HUD (status segment, queue widget) and `/img` Studio (`src/commands/img.ts`) for looking and configuring only: Models (pick the default from host models), Settings (writes `img-pi.json` via `ConfigStore.patchScope`), Gallery (manifest + host `Image` preview). Do not add generate/compose UI or more commands without an explicit product decision.
+- **Studio keys come from the host.** Use `host.parseKey` (host TUI `parseKey`) and `keyToAction` in `src/ui/studio-state.ts`; never parse escape sequences by hand. Settings rows are declared once in `src/ui/settings-fields.ts` (typed read/patch per key); add a setting there, nowhere else.
 - **Agent-facing tools must be visible.** `img_generate` and `img_edit` set `essential: true` and `approval` (→ omp `loadMode: "essential"`, `oh-my-pi/packages/coding-agent/src/tools/essential-tools.ts:45`; extension tools are otherwise _discoverable_ and hidden from the top-level list) and `promptSnippet` / `promptGuidelines` (→ pi, which omits custom tools from "Available tools" without a snippet, `pi/packages/coding-agent/src/core/extensions/types.ts:587`). Descriptions tell the agent _when_ to call the tool. `test/e2e/*` asserts this.
 - **Ask the host, never hardcode.** Model lists, display names, credentials, capabilities, request knobs, and prices come from the host API:
    - omp: `ctx.modelRegistry.getAvailable("all")` filtered by `kind === "image"` and `isImageGenerationApi(api)`; generate with `generateImage()` + `getApiKey`/`resolver`/`resolveModelHeaders` (mirror `oh-my-pi/packages/coding-agent/src/tools/image-gen.ts`).
@@ -78,7 +79,7 @@ The product is: the user says "draw me a cat" in omp/pi, the agent calls `img_ge
 
 ## 6. UI: pure, fast, zero waste
 
-- Components (`src/ui/components/*`) are pure: `render(width): string[]` from a ViewModel. No IO, no business logic, no `Date.now()`, no config reads, no allocation-heavy work inside `render`.
+- Components (`src/ui/components/*`, `src/ui/screens/*`) are pure: `render(width): string[]` from a ViewModel. No IO, no business logic, no `Date.now()`, no config reads, no allocation-heavy work inside `render`.
 - ViewModels are built in `src/ui/view-models.ts` (pure selectors) and memoized by `(vm hash, width)`. A changed hash or width is the only trigger for recomputation. `invalidate()` clears the cache.
 - One shared ticker (`src/ui/ticker.ts`) for all spinners. It runs only while a job is active and is stopped on `session_shutdown`.
 - `requestRender` is throttled to ≤ 10 Hz from progress events.
@@ -112,7 +113,7 @@ The product is: the user says "draw me a cat" in omp/pi, the agent calls `img_ge
 
 ## 11. Architecture boundaries
 
-Allowed import direction: `host → app (wire, tools, ui) → services (jobs, pipeline, providers, storage) → domain/core`. `workers/*` is imported only by `workers/pool.ts`.
+Allowed import direction: `host → app (wire, tools, commands, ui) → services (jobs, pipeline, providers, storage) → domain/core`. `workers/*` is imported only by `workers/pool.ts`.
 
 - Only `src/host/*` and `src/index.ts` import `@oh-my-pi/*` or `@earendil-works/*` (type imports are allowed in `src/host/render-shim.ts`).
 - `domain/*` and `core/*` do no IO and import nothing from services or host.

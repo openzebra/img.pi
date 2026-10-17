@@ -18,11 +18,28 @@ export interface ComponentLike {
 	invalidate(): void;
 }
 
-/** Passive UI surface used by the HUD (status segment + queue widget). No interactive prompts. */
+export interface TuiHandleLike {
+	requestRender(): void;
+}
+
+/** Overlay sizing forwarded to the host `showOverlay` (both hosts share these fields). */
+export interface OverlayOptionsLike {
+	readonly width?: number | string;
+	readonly maxHeight?: number | string;
+}
+
+export type CustomComponentFactory<T> = (
+	tui: TuiHandleLike,
+	theme: PortableTheme,
+	done: (result: T) => void,
+) => ComponentLike;
+
 export interface PortableUIContext {
 	notify(message: string, type?: "info" | "warning" | "error"): void;
 	setStatus(key: string, text: string | undefined): void;
 	setWidget(key: string, lines: readonly string[] | undefined): void;
+	/** Shows a component as an overlay until it calls `done`; `undefined` when the host has no UI. */
+	custom<T>(factory: CustomComponentFactory<T>, overlay?: OverlayOptionsLike): Promise<T | undefined>;
 }
 
 export interface PortableCtx {
@@ -147,6 +164,11 @@ export interface PortableTool<P, D> {
 	) => ComponentLike;
 }
 
+export interface PortableCommand {
+	readonly description: string;
+	handler(args: string, ctx: PortableCtx): Promise<void>;
+}
+
 export interface PortableFlag {
 	readonly description: string;
 	readonly type: "string" | "boolean";
@@ -159,6 +181,9 @@ export interface HostPort {
 	readonly projectDirName: ".omp" | ".pi";
 	registerTool<P, D>(def: PortableTool<P, D>): void;
 	registerFlag(name: string, spec: PortableFlag): void;
+	registerCommand(name: string, spec: PortableCommand): void;
+	/** Normalized key name from the host TUI (`"up"`, `"enter"`, `"shift+tab"`, …). */
+	parseKey(data: string): string | undefined;
 	getFlag(name: string): string | boolean | undefined;
 	onSessionStart(fn: (ctx: PortableCtx) => void | Promise<void>): void;
 	onSessionShutdown(fn: () => void | Promise<void>): void;

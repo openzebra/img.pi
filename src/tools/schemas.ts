@@ -556,7 +556,8 @@ const TEXTURE_SPECIFIC_FIELDS = {
 		jsonSchema: {
 			type: "integer",
 			enum: [256, 512, 1024, 2048, 4096],
-			description: "Square map resolution in pixels (256|512|1024|2048|4096, default 1024).",
+			description:
+				"Square map size in pixels. 4K = 4096, 2K = 2048, 1K = 1024. Omit to use the configured default (textures.resolution). Maps are resized up from the model's native output.",
 		},
 		arkDef: "256 | 512 | 1024 | 2048 | 4096",
 	}),

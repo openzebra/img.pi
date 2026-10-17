@@ -294,6 +294,14 @@ describe("tools: schemas & execution", () => {
 		expect(varRes.content.length).toBe(2);
 	});
 
+	test("agent guidance: texture requests route to img_texture with the requested resolution, honestly described", () => {
+		const texture = createImgTextureTool(runtimeDeps);
+		expect(texture.description).toContain("4K → 4096");
+		expect(texture.description).toContain("native");
+		expect(JSON.stringify(texture.parameters)).toContain("4K = 4096");
+		expect(createImgGenerateTool(runtimeDeps).description).toContain("img_texture");
+	});
+
 	test("img_list_models lists host models, grouped by provider, with the default marked", async () => {
 		const listTool = createImgListModelsTool(runtimeDeps);
 		const ctx = wrapPortableCtx({ cwd: tmpDir, mode: "print" });

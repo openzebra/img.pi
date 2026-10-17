@@ -9,6 +9,7 @@ import type {
 	HostPort,
 	NativeRequest,
 	NativeResponse,
+	PortableCommand,
 	PortableCtx,
 	PortableFlag,
 	PortableTool,
@@ -32,6 +33,19 @@ export const TEXT_ONLY_IMAGE_MODEL: HostImageModel = Object.freeze({
 	acceptsImages: false,
 	options: Object.freeze({ aspectRatio: true, imageSize: true }),
 });
+
+export const KEY_SEQ = Object.freeze({
+	up: "\x1b[A",
+	down: "\x1b[B",
+	right: "\x1b[C",
+	left: "\x1b[D",
+	enter: "\r",
+	escape: "\x1b",
+});
+
+const FAKE_KEYS: Readonly<Record<string, string>> = Object.freeze(
+	Object.fromEntries(Object.entries(KEY_SEQ).map(([name, seq]) => [seq, name])),
+);
 
 /** In-memory HostPort: records registrations and generation requests, returns a PNG per call. */
 export class FakeHost implements HostPort {
@@ -59,6 +73,17 @@ export class FakeHost implements HostPort {
 			...(def.approval !== undefined ? { approval: def.approval } : {}),
 			...(def.promptSnippet !== undefined ? { promptSnippet: def.promptSnippet } : {}),
 		});
+	}
+
+	public readonly commands = new Map<string, PortableCommand>();
+
+	public registerCommand(name: string, spec: PortableCommand): void {
+		this.commands.set(name, spec);
+	}
+
+	/** Minimal stand-in for the host TUI `parseKey` (legacy escape sequences only). */
+	public parseKey(data: string): string | undefined {
+		return FAKE_KEYS[data];
 	}
 
 	public registerFlag(_name: string, _spec: PortableFlag): void {

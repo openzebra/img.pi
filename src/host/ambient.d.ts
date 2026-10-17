@@ -59,6 +59,8 @@ declare module "@oh-my-pi/pi-tui" {
 		public render(width: number): string[];
 		public invalidate(): void;
 	}
+	/** Normalized key id for raw terminal input (keys.ts `parseKey`). */
+	export function parseKey(data: string): string | undefined;
 }
 
 // pi/packages/tui/src/components/image.ts
@@ -76,4 +78,6 @@ declare module "@earendil-works/pi-tui" {
 		public render(width: number): string[];
 		public invalidate(): void;
 	}
+	/** Normalized key id for raw terminal input (keys.ts `parseKey`). */
+	export function parseKey(data: string): string | undefined;
 }

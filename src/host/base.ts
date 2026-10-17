@@ -5,12 +5,15 @@ import type {
 	HostImageModel,
 	HostKind,
 	HostPort,
+	CustomComponentFactory,
 	HostRunMode,
 	ImageBytes,
 	ImageRenderOpts,
 	NativeRequest,
 	NativeResponse,
 	NativeUsage,
+	OverlayOptionsLike,
+	PortableCommand,
 	PortableCtx,
 	PortableFlag,
 	PortableTheme,
@@ -19,7 +22,7 @@ import type {
 	PortableToolUpdateCallback,
 	PortableUIContext,
 } from "./port.js";
-import { toHostRenderers } from "./render-shim.js";
+import { toHostRenderers, wrapHostTheme } from "./render-shim.js";
 
 export function isRecord(v: unknown): v is Record<string, unknown> {
 	return typeof v === "object" && v !== null;
@@ -75,6 +78,39 @@ export function wrapPortableCtx(rawCtx: unknown): PortableCtx {
 		},
 		setWidget(key, lines): void {
 			callUi("setWidget", key, lines !== undefined ? [...lines] : undefined);
+		},
+		async custom<T>(factory: CustomComponentFactory<T>, overlay?: OverlayOptionsLike): Promise<T | undefined> {
+			const customFn = rawUi["custom"];
+			if (!isCallable(customFn)) {
+				return undefined;
+			}
+			let result: T | undefined;
+			// Host factory: (tui, theme, keybindings, done) on both omp and pi.
+			const hostFactory = (
+				rawTui: unknown,
+				rawTheme: unknown,
+				_keys: unknown,
+				hostDone: (r: unknown) => void,
+			): ComponentLike =>
+				factory(
+					{
+						requestRender(): void {
+							if (isRecord(rawTui) && isCallable(rawTui["requestRender"])) {
+								rawTui["requestRender"].call(rawTui);
+							}
+						},
+					},
+					wrapHostTheme(rawTheme),
+					(r: T) => {
+						result = r;
+						hostDone(r);
+					},
+				);
+			await customFn.call(rawUi, hostFactory, {
+				overlay: true,
+				...(overlay !== undefined ? { overlayOptions: { ...overlay } } : {}),
+			});
+			return result;
 		},
 	};
 	const sessionId = readSessionId(rec);
@@ -146,14 +182,15 @@ export function toNativeUsage(raw: unknown): NativeUsage | undefined {
 	};
 }
 
-/** Structural view of the host TUI module's `Image` component (omp and pi share the ctor). */
-export interface TuiImageModule {
+/** Structural view of the host TUI module: `Image` component and `parseKey` (same on omp and pi). */
+export interface TuiModule {
 	readonly Image: new (
 		base64Data: string,
 		mimeType: string,
 		theme: { readonly fallbackColor: (text: string) => string },
 		options?: ImageRenderOpts,
 	) => ComponentLike;
+	readonly parseKey: (data: string) => string | undefined;
 }
 
 /** Host-specific tool definition fields (visibility / prompt metadata). */
@@ -168,14 +205,14 @@ export abstract class BaseHost implements HostPort {
 	public abstract readonly agentDir: string;
 	public abstract readonly projectDirName: ".omp" | ".pi";
 	protected readonly api: Record<string, unknown>;
-	private tui: TuiImageModule | undefined;
+	private tui: TuiModule | undefined;
 
 	protected constructor(rawApi: Record<string, unknown>) {
 		this.api = rawApi;
 	}
 
 	protected abstract toolFields<P, D>(def: PortableTool<P, D>): HostToolFields;
-	protected abstract loadTui(): Promise<TuiImageModule>;
+	protected abstract loadTui(): Promise<TuiModule>;
 	public abstract configuredImageModel(ctx: PortableCtx): string | undefined;
 	public abstract nativeImageModels(ctx: PortableCtx): Promise<Result<readonly HostImageModel[], ImgError>>;
 	public abstract generateNative(
@@ -208,6 +245,20 @@ export abstract class BaseHost implements HostPort {
 			...(renderers.renderCall !== undefined ? { renderCall: renderers.renderCall } : {}),
 			...(renderers.renderResult !== undefined ? { renderResult: renderers.renderResult } : {}),
 		});
+	}
+
+	public registerCommand(name: string, spec: PortableCommand): void {
+		this.callApi("registerCommand", name, {
+			description: spec.description,
+			handler: async (args: unknown, rawCtx: unknown): Promise<void> => {
+				await this.ensureTui();
+				await spec.handler(typeof args === "string" ? args : "", wrapPortableCtx(rawCtx));
+			},
+		});
+	}
+
+	public parseKey(data: string): string | undefined {
+		return this.tui?.parseKey(data);
 	}
 
 	public registerFlag(name: string, spec: PortableFlag): void {

@@ -19,6 +19,7 @@ export const IMG_GENERATE_DESCRIPTION =
 	"Write a detailed visual prompt (subject, setting, composition, lighting, style). The model defaults to the best " +
 	"one connected in this session; pass `model` only if the user names one (see img_list_models). " +
 	"The image is saved under .pi/img/images and its path is returned. " +
+	"For textures, materials, or seamless PBR maps use img_texture instead. " +
 	"Examples: {prompt:'a fluffy ginger cat curled on a sunny windowsill, soft morning light, photo'} · " +
 	"{prompt:'flat vector app icon of a paper plane', aspect_ratio:'1:1', style:'ui-icon'}.";
 
@@ -27,6 +28,7 @@ const IMG_GENERATE_SNIPPET = "img_generate: create an image from a text prompt (
 const IMG_GENERATE_GUIDELINES: readonly string[] = Object.freeze([
 	"When the user asks for a picture, drawing, illustration, photo, icon, or artwork, call img_generate yourself with a detailed prompt.",
 	"To change an existing image (including one just generated, via '@last'), call img_edit instead.",
+	"For textures, materials, or seamless/tileable PBR maps, call img_texture instead (set its `resolution`, e.g. 4K → 4096).",
 ]);
 
 export function createImgGenerateTool(deps: ToolRuntimeDeps): PortableTool<ImgGenerateParams, GenerateDetails> {

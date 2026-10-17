@@ -7,3 +7,4 @@ generated/
 *.log
 .DS_Store
 .rlm/
+.omp/

@@ -3,13 +3,19 @@ import type { ImgError } from "../core/errors.js";
 import { formatImgError } from "../core/errors.js";
 import { deepFreeze } from "../core/freeze.js";
 import { shortJobId, toSlug } from "../core/ids.js";
-import type { ArtifactSummary } from "../domain/artifact.js";
+import type { ImgConfig, PartialConfig } from "../config/schema.js";
+import type { ArtifactSummary, SidecarDocument } from "../domain/artifact.js";
 import { ARTIFACT_PATHS, failedRequestRelPath } from "../domain/artifact-paths.js";
 import type { JobPhase, JobState } from "../domain/job.js";
 import type { TextureMapKind } from "../domain/texture.js";
 import type { ComponentLike, PortableTheme } from "../host/port.js";
 import { computeJobProgress } from "../jobs/progress.js";
 import type { QueueSnapshot } from "../jobs/queue.js";
+import type { ProviderModel } from "../providers/port.js";
+import { explicitSelector } from "../providers/registry.js";
+import { SETTINGS_FIELDS, settingSource } from "./settings-fields.js";
+import type { SaveScope, StudioMessage, StudioState, StudioTab } from "./studio-state.js";
+import { STUDIO_TAB_LABELS, STUDIO_TABS } from "./studio-state.js";
 import { formatBytes, formatCompactSeconds, formatEtaSeconds, formatStopwatch, PLAIN_THEME } from "./theme.js";
 
 export interface HashedVM {
@@ -465,5 +471,182 @@ export function buildStatusSegmentVM(input: {
 
 	const text = `img:${modelLabel}`;
 	const payload = { state: "idle" as const, text };
+	return deepFreeze({ ...payload, hash: computeHashCode(payload) });
+}
+
+/** Selectable rows visible at once in Studio lists; the window follows the cursor. */
+export const STUDIO_LIST_ROWS = 10;
+
+export type StudioRow =
+	| { readonly kind: "heading"; readonly text: string }
+	| { readonly kind: "text"; readonly text: string; readonly tone: "muted" | "error" }
+	| {
+			readonly kind: "item";
+			readonly label: string;
+			readonly value: string;
+			readonly note: string;
+			readonly selected: boolean;
+			readonly marked: boolean;
+	  };
+
+export interface StudioVM extends HashedVM {
+	readonly tabs: readonly { readonly label: string; readonly active: boolean }[];
+	readonly rows: readonly StudioRow[];
+	readonly message?: StudioMessage;
+	readonly noColor: boolean;
+}
+
+export interface StudioData {
+	readonly loading: boolean;
+	readonly models: readonly ProviderModel[];
+	readonly modelsError?: string;
+	/** `defaults.model` as configured (`auto` or an id). */
+	readonly configuredModel: string;
+	/** The model a call without `model` would use right now (same resolution as generation). */
+	readonly resolvedModel?: { readonly id: string; readonly label: string };
+	readonly config: ImgConfig;
+	readonly layers: { readonly user?: PartialConfig; readonly project?: PartialConfig };
+	readonly configPaths: Readonly<Record<SaveScope, string>>;
+	readonly gallery: readonly SidecarDocument[];
+}
+
+/** Rows the cursor can land on, per tab (headings and text are skipped). */
+export function studioRowCounts(data: StudioData): Readonly<Record<StudioTab, number>> {
+	return {
+		models: data.models.length + 1,
+		settings: SETTINGS_FIELDS.length + 1,
+		gallery: data.gallery.length,
+	};
+}
+
+function windowStart(cursor: number, total: number): number {
+	const half = Math.floor(STUDIO_LIST_ROWS / 2);
+	return Math.max(0, Math.min(cursor - half, total - STUDIO_LIST_ROWS));
+}
+
+function modelRows(data: StudioData, cursor: number): StudioRow[] {
+	const isAuto = explicitSelector(data.configuredModel) === undefined;
+	const rows: StudioRow[] = [
+		{
+			kind: "text",
+			text: "Image models from the providers connected in the host. enter = make default.",
+			tone: "muted",
+		},
+		{
+			kind: "item",
+			label: "auto",
+			value: "host decides",
+			note: isAuto && data.resolvedModel !== undefined ? `→ ${data.resolvedModel.label}` : "",
+			selected: cursor === 0,
+			marked: isAuto,
+		},
+	];
+	if (data.modelsError !== undefined) {
+		rows.push({ kind: "text", text: data.modelsError, tone: "error" });
+		return rows;
+	}
+	if (data.models.length === 0) {
+		rows.push({
+			kind: "text",
+			text: data.loading ? "loading…" : "No image models — connect a provider that has them (/login).",
+			tone: data.loading ? "muted" : "error",
+		});
+		return rows;
+	}
+	const start = windowStart(cursor - 1, data.models.length);
+	let provider: string | undefined;
+	data.models.slice(start, start + STUDIO_LIST_ROWS).forEach((m, i) => {
+		if (m.providerLabel !== provider) {
+			provider = m.providerLabel;
+			rows.push({ kind: "heading", text: provider });
+		}
+		rows.push({
+			kind: "item",
+			label: m.label,
+			value: m.id,
+			note: m.caps.has("img2img") ? "generate + edit" : "generate",
+			selected: cursor === start + i + 1,
+			marked: !isAuto && m.id === data.resolvedModel?.id,
+		});
+	});
+	return rows;
+}
+
+function settingsRows(data: StudioData, cursor: number, scope: SaveScope): StudioRow[] {
+	const rows: StudioRow[] = [
+		{
+			kind: "item",
+			label: "Save to",
+			value: scope,
+			note: data.configPaths[scope],
+			selected: cursor === 0,
+			marked: false,
+		},
+		{ kind: "heading", text: "Settings (enter cycles the value, saved immediately)" },
+	];
+	SETTINGS_FIELDS.forEach((field, i) => {
+		rows.push({
+			kind: "item",
+			label: field.label,
+			value: field.valueLabel(data.config),
+			note: settingSource(field, data.layers),
+			selected: cursor === i + 1,
+			marked: false,
+		});
+	});
+	const hint =
+		cursor === 0
+			? "Which file Studio writes: this project, or all projects (user)."
+			: SETTINGS_FIELDS[cursor - 1]?.hint;
+	if (hint !== undefined) {
+		rows.push({ kind: "text", text: hint, tone: "muted" });
+	}
+	return rows;
+}
+
+function galleryRows(data: StudioData, cursor: number): StudioRow[] {
+	if (data.gallery.length === 0) {
+		return [
+			{
+				kind: "text",
+				text: data.loading ? "loading…" : "No images yet — ask the agent to draw something.",
+				tone: "muted",
+			},
+		];
+	}
+	const start = windowStart(cursor, data.gallery.length);
+	const rows: StudioRow[] = data.gallery.slice(start, start + STUDIO_LIST_ROWS).map((doc, i) => ({
+		kind: "item",
+		label: doc.createdAt.slice(5, 16).replace("T", " "),
+		value: doc.prompt,
+		note: doc.model,
+		selected: cursor === start + i,
+		marked: false,
+	}));
+	const sel = data.gallery[cursor];
+	if (sel !== undefined) {
+		rows.push({
+			kind: "text",
+			text: `${sel.path} · ${sel.producedSize[0]}×${sel.producedSize[1]} · ${formatBytes(sel.bytes)}`,
+			tone: "muted",
+		});
+	}
+	return rows;
+}
+
+export function buildStudioVM(state: StudioState, data: StudioData, noColor: boolean): StudioVM {
+	const cursor = state.cursor[state.tab];
+	const rows =
+		state.tab === "models"
+			? modelRows(data, cursor)
+			: state.tab === "settings"
+				? settingsRows(data, cursor, state.scope)
+				: galleryRows(data, cursor);
+	const payload = {
+		tabs: STUDIO_TABS.map(t => ({ label: STUDIO_TAB_LABELS[t], active: t === state.tab })),
+		rows,
+		...(state.message !== undefined ? { message: state.message } : {}),
+		noColor,
+	};
 	return deepFreeze({ ...payload, hash: computeHashCode(payload) });
 }

@@ -62,6 +62,20 @@ async function atomicWriteJson(filePath: string, data: unknown): Promise<Result<
 	);
 }
 
+function isPlainRecord(v: unknown): v is Readonly<Record<string, unknown>> {
+	return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Deep merge of JSON-shaped records; arrays and scalars in `patch` replace. */
+function mergeRecords(base: object, patch: object): Record<string, unknown> {
+	const out: Record<string, unknown> = Object.fromEntries(Object.entries(base));
+	for (const [key, value] of Object.entries(patch)) {
+		const prev = out[key];
+		out[key] = isPlainRecord(prev) && isPlainRecord(value) ? mergeRecords(prev, value) : value;
+	}
+	return out;
+}
+
 export class ConfigStore {
 	readonly #agentDir: string;
 	readonly #projectDirName: ".omp" | ".pi";
@@ -152,6 +166,14 @@ export class ConfigStore {
 		const eff = this.getEffective();
 		this.#changeEmitter.emit(eff);
 		return ok(eff);
+	}
+
+	/** Merge `patch` into the scope's file (keeping its other keys), validate, and save atomically. */
+	public async patchScope(scope: "user" | "project", patch: PartialConfig): Promise<Result<ImgConfig, ImgError>> {
+		const current = scope === "user" ? this.#userLayer : this.#projectLayer;
+		const merged = validatePartialConfig(mergeRecords(current ?? {}, patch));
+		if (!merged.ok) return merged;
+		return this.saveScope(scope, merged.value);
 	}
 
 	public async saveScope(scope: "user" | "project", config: PartialConfig): Promise<Result<ImgConfig, ImgError>> {

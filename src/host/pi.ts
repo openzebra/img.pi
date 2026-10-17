@@ -5,7 +5,7 @@ import { abortedError, fromUnknownError, modelNotFound, providerHttp } from "../
 import { deepFreeze } from "../core/freeze.js";
 import type { Result } from "../core/result.js";
 import { err, ok, tryAsync } from "../core/result.js";
-import type { HostToolFields, TuiImageModule } from "./base.js";
+import type { HostToolFields, TuiModule } from "./base.js";
 import {
 	BaseHost,
 	isCallable,
@@ -65,7 +65,7 @@ export class PiHost extends BaseHost {
 		};
 	}
 
-	protected async loadTui(): Promise<TuiImageModule> {
+	protected async loadTui(): Promise<TuiModule> {
 		return import("@earendil-works/pi-tui");
 	}
 

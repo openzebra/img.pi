@@ -99,7 +99,7 @@ describe("e2e: omp host harness", () => {
 		expect(tools.get("img_generate")).toMatchObject({ loadMode: "essential", approval: "write" });
 		expect(tools.get("img_edit")).toMatchObject({ loadMode: "essential", approval: "write" });
 		expect(tools.get("img_list_models")?.loadMode).toBeUndefined();
-		expect(commands).toEqual([]);
+		expect(commands).toEqual(["img"]);
 
 		const statusUpdates: (string | undefined)[] = [];
 		const ctx = {

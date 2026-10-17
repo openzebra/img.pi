@@ -23,13 +23,17 @@ const MAX_SUGGESTIONS = 3;
 
 export const IMG_MODEL_FLAG = "img-model";
 
-function explicitSelector(v: string | boolean | undefined): string | undefined {
+/** The selector names a specific model (not empty, not "let the host decide"). */
+export function explicitSelector(v: string | boolean | undefined): string | undefined {
 	if (typeof v !== "string") {
 		return undefined;
 	}
 	const clean = v.trim();
 	return clean.length > 0 && !AUTO_SELECTORS.has(clean.toLowerCase()) ? clean : undefined;
 }
+
+/** Value `defaults.model` takes for "let the host decide". */
+export const AUTO_MODEL_SELECTOR = "auto";
 
 function matches(model: ProviderModel, selector: string): boolean {
 	const want = selector.toLowerCase();
