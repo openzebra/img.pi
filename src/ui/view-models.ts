@@ -203,6 +203,8 @@ function errorSuggestionFor(error: ImgError): string | undefined {
 			return "→ ask for a model that supports it (img_list_models)";
 		case "provider_http":
 			return error.retryable ? "→ transient provider error; ask to retry" : undefined;
+		case "quota_exhausted":
+			return "→ quota exhausted; ask for another image model (img_list_models) or wait for the reset";
 		case "config_invalid":
 		case "ref_unreadable":
 		case "path_forbidden":
@@ -409,7 +411,11 @@ export function buildQueueWidgetVM(input: {
 				estimated: prog.estimated,
 				elapsedLabel: formatCompactSeconds(prog.elapsedMs),
 				...(job.queuePosition !== undefined ? { queuePosition: job.queuePosition } : {}),
-				...(job.detail !== undefined ? { detail: job.detail } : {}),
+				...(job.error !== undefined
+					? { detail: formatImgError(job.error) }
+					: job.detail !== undefined
+						? { detail: job.detail }
+						: {}),
 			});
 			idx++;
 		}

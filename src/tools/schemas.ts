@@ -177,7 +177,7 @@ export const REF_FIELDS = {
 			type: "array",
 			maxItems: 16,
 			description:
-				"Up to 16 reference images. source: cwd-relative path, http(s):// URL, data: URI, or '@last'/'@job:<id>[#n]'.",
+				"Up to 16 reference images. source: cwd-relative path, http(s):// URL, data: URI, a host URL such as a pasted image's local://…, or '@last'/'@job:<id>[#n]'.",
 			items: {
 				type: "object",
 				properties: {
@@ -457,7 +457,8 @@ const EDIT_SPECIFIC_FIELDS = {
 		jsonSchema: {
 			type: "string",
 			minLength: 1,
-			description: "Source image to edit (path relative to cwd, URL, data: URI, or @last / @job:<id>).",
+			description:
+				"Source image to edit (path relative to cwd, URL, data: URI, a host URL such as local://…, or @last / @job:<id>).",
 		},
 		arkDef: "string >= 1",
 	}),

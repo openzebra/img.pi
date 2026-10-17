@@ -40,6 +40,16 @@ export type WorkerOp =
 	| "mirror_quad"
 	| "tile_grid";
 
+/** Debug facts the host attaches to a failed provider call; each is present only when the host reports it. */
+export interface ProviderFailureDetail {
+	/** Provider error code from the response envelope (host `ProviderHttpError.code`). */
+	readonly code?: string;
+	/** Wait the provider asked for, from its retry headers. */
+	readonly retryAfterMs?: number;
+	/** Chat model that carried a hosted image call (`provider/id`). */
+	readonly via?: string;
+}
+
 export type PathForbiddenReason = "outside_root" | "exists" | "not_writable";
 
 export type ImgError =
@@ -50,13 +60,19 @@ export type ImgError =
 	| { readonly kind: "unsupported"; readonly model: string; readonly feature: Capability }
 	| { readonly kind: "ref_unreadable"; readonly source: string; readonly reason: string }
 	| { readonly kind: "path_forbidden"; readonly path: string; readonly reason: PathForbiddenReason }
-	| {
+	| ({
 			readonly kind: "provider_http";
 			readonly provider: string;
 			readonly status: number;
 			readonly body: string;
 			readonly retryable: boolean;
-	  }
+	  } & ProviderFailureDetail)
+	| ({
+			readonly kind: "quota_exhausted";
+			readonly provider: string;
+			readonly status: number;
+			readonly body: string;
+	  } & ProviderFailureDetail)
 	| { readonly kind: "content_policy"; readonly provider: string; readonly message: string }
 	| { readonly kind: "timeout"; readonly afterMs: number }
 	| { readonly kind: "aborted" }
@@ -97,8 +113,23 @@ export function pathForbidden(path: string, reason: PathForbiddenReason): ImgErr
 	return Object.freeze({ kind: "path_forbidden", path, reason });
 }
 
-export function providerHttp(provider: string, status: number, body: string, retryable: boolean): ImgError {
-	return Object.freeze({ kind: "provider_http", provider, status, body, retryable });
+export function providerHttp(
+	provider: string,
+	status: number,
+	body: string,
+	retryable: boolean,
+	detail: ProviderFailureDetail = {},
+): ImgError {
+	return Object.freeze({ kind: "provider_http", provider, status, body, retryable, ...detail });
+}
+
+export function quotaExhausted(
+	provider: string,
+	status: number,
+	body: string,
+	detail: ProviderFailureDetail = {},
+): ImgError {
+	return Object.freeze({ kind: "quota_exhausted", provider, status, body, ...detail });
 }
 
 export function contentPolicy(provider: string, message: string): ImgError {
@@ -148,6 +179,37 @@ export function errorMessage(e: unknown): string {
 	return String(e);
 }
 
+/** Status and envelope of an HTTP failure thrown by the host (duck-typed host `ProviderHttpError`). */
+export interface HttpFailure {
+	readonly status: number;
+	readonly message: string;
+	readonly code?: string;
+	readonly headers?: unknown;
+}
+
+export function readHttpFailure(e: unknown): HttpFailure | undefined {
+	if (typeof e !== "object" || e === null || !("status" in e) || typeof e.status !== "number") {
+		return undefined;
+	}
+	const code = "code" in e && typeof e.code === "string" ? e.code : undefined;
+	const headers = "headers" in e ? e.headers : undefined;
+	return {
+		status: e.status,
+		message: errorMessage(e),
+		...(code !== undefined ? { code } : {}),
+		...(headers !== undefined ? { headers } : {}),
+	};
+}
+
+function formatFailureDetail(error: ProviderFailureDetail): string {
+	const parts = [
+		error.via !== undefined ? ` · via ${error.via}` : "",
+		error.code !== undefined ? ` · code ${error.code}` : "",
+		error.retryAfterMs !== undefined ? ` · retry after ${Math.ceil(error.retryAfterMs / 1000)}s` : "",
+	];
+	return parts.join("");
+}
+
 export function fromUnknownError(e: unknown): ImgError {
 	if (isAbortLike(e)) {
 		return abortedError();
@@ -179,7 +241,9 @@ export function formatImgError(error: ImgError): string {
 				? `path_forbidden (outside_root): ${error.path} — images are saved inside the project (.pi/img); copy the file afterwards, or set output.allowOutsideCwd: true in img-pi.json`
 				: `path_forbidden (${error.reason}): ${error.path}`;
 		case "provider_http":
-			return `provider_http ${error.status} · ${error.provider} · ${error.body}`;
+			return `provider_http ${error.status} · ${error.provider}${formatFailureDetail(error)} · ${error.body}`;
+		case "quota_exhausted":
+			return `quota_exhausted ${error.status} · ${error.provider}${formatFailureDetail(error)} · ${error.body} — retrying this model will fail the same way; use another image model or wait for the reset`;
 		case "content_policy":
 			return `content_policy (${error.provider}): ${error.message}`;
 		case "timeout":

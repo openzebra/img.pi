@@ -28,7 +28,9 @@ import {
 import { PLAIN_THEME } from "../../src/ui/theme.js";
 import { SharedTicker } from "../../src/ui/ticker.js";
 import { WorkerPool } from "../../src/workers/pool.js";
+import { quotaExhausted } from "../../src/core/errors.js";
 import { FakeHost, GOOGLE_IMAGE_MODEL, TEXT_ONLY_IMAGE_MODEL } from "../fixtures/fake-host.js";
+import { buildTinySeedPng } from "../fixtures/png.js";
 
 describe("tools: schemas & execution", () => {
 	let tmpDir = "";
@@ -353,6 +355,76 @@ describe("tools: schemas & execution", () => {
 		expect(res.isError).toBe(true);
 		const text = res.content[0]?.type === "text" ? res.content[0].text : "";
 		expect(text).toContain("unsupported");
+	});
+
+	// Regression: a pasted omp image (`local://…`, stored outside cwd) failed as "File not found".
+	test("img_generate reads a host-internal reference URL the host resolves outside cwd", async () => {
+		const outside = await fs.mkdtemp(path.join(os.tmpdir(), "img-pi-host-url-"));
+		try {
+			const file = path.join(outside, "pasted-image-ab.png");
+			await fs.writeFile(file, new Uint8Array(buildTinySeedPng(3, false)));
+			host.hostUrls.set("local://pasted-image-ab.png", file);
+			host.requests.length = 0;
+			const res = await createImgGenerateTool(runtimeDeps).execute(
+				"call-host-url",
+				{
+					prompt: "wood texture like the reference",
+					model: GOOGLE_IMAGE_MODEL.id,
+					references: [{ source: "local://pasted-image-ab.png", role: "style" }],
+				},
+				undefined,
+				undefined,
+				wrapPortableCtx({ cwd: tmpDir, mode: "print" }),
+			);
+			expect(res.isError).toBe(false);
+			expect(host.requests[0]?.inputImages?.length).toBe(1);
+		} finally {
+			host.hostUrls.clear();
+			await fs.rm(outside, { recursive: true, force: true });
+		}
+	});
+
+	test("a failed generation saves debug facts: model, failing phase, timings, the agent-facing message", async () => {
+		host.failWith = quotaExhausted(GOOGLE_IMAGE_MODEL.id, 429, "You have exhausted your capacity");
+		try {
+			const res = await createImgGenerateTool(runtimeDeps).execute(
+				"call-quota",
+				{ prompt: "quota victim", model: GOOGLE_IMAGE_MODEL.id },
+				undefined,
+				undefined,
+				wrapPortableCtx({ cwd: tmpDir, mode: "print" }),
+			);
+			expect(res.isError).toBe(true);
+			const text = res.content[0]?.type === "text" ? res.content[0].text : "";
+			expect(text).toContain("quota_exhausted 429");
+			expect(text).toContain("use another image model");
+
+			const failedDir = path.join(tmpDir, ".pi/img/failed");
+			const names = await fs.readdir(failedDir);
+			const records = await Promise.all(
+				names.map(async n => JSON.parse(await fs.readFile(path.join(failedDir, n), "utf8")) as unknown),
+			);
+			const record = records.find(
+				(r): r is { debug: Record<string, unknown> } =>
+					typeof r === "object" &&
+					r !== null &&
+					"debug" in r &&
+					typeof r.debug === "object" &&
+					r.debug !== null &&
+					"message" in r.debug &&
+					String(r.debug.message).startsWith("quota_exhausted"),
+			);
+			expect(record?.debug).toMatchObject({
+				host: "omp",
+				provider: GOOGLE_IMAGE_MODEL.provider,
+				model: GOOGLE_IMAGE_MODEL.id,
+				failedPhase: "generating",
+			});
+			expect(typeof record?.debug["durationMs"]).toBe("number");
+			expect(String(record?.debug["finalPrompt"])).toContain("quota victim");
+		} finally {
+			host.failWith = undefined;
+		}
 	});
 
 	test("aborted tool call returns isError: false (cancelled, not failed)", async () => {

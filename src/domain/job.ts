@@ -72,6 +72,8 @@ export interface JobState {
 	readonly warnings: readonly string[];
 	readonly usage?: UsageSummary;
 	readonly error?: ImgError;
+	/** Phase the job was in when it failed (debug: where it broke). */
+	readonly failedPhase?: JobPhase;
 }
 
 const ZERO_TIMINGS: Readonly<Record<JobPhase, number>> = deepFreeze({
@@ -211,9 +213,11 @@ export function reduceJob(state: JobState, ev: JobEvent): JobState {
 		}
 		case "fail": {
 			const timings = accumulateTiming(state, ev.at);
+			// A terminal job has no live step; a stale "generating…" would read as still running.
+			const { detail: _staleDetail, ...settled } = state;
 			if (ev.error.kind === "aborted") {
 				return Object.freeze({
-					...state,
+					...settled,
 					phase: "cancelled",
 					finishedAt: ev.at,
 					phaseStartedAt: ev.at,
@@ -221,9 +225,10 @@ export function reduceJob(state: JobState, ev: JobEvent): JobState {
 				});
 			}
 			return Object.freeze({
-				...state,
+				...settled,
 				phase: "failed",
 				error: ev.error,
+				failedPhase: state.phase,
 				finishedAt: ev.at,
 				phaseStartedAt: ev.at,
 				timings,
@@ -231,8 +236,9 @@ export function reduceJob(state: JobState, ev: JobEvent): JobState {
 		}
 		case "cancel": {
 			const timings = accumulateTiming(state, ev.at);
+			const { detail: _staleDetail, ...settled } = state;
 			return Object.freeze({
-				...state,
+				...settled,
 				phase: "cancelled",
 				finishedAt: ev.at,
 				phaseStartedAt: ev.at,

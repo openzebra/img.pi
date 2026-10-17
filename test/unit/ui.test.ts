@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DEFAULT_CONFIG } from "../../src/config/schema.js";
-import { abortedError, providerHttp, workerFailed } from "../../src/core/errors.js";
+import { abortedError, providerHttp, quotaExhausted, workerFailed } from "../../src/core/errors.js";
 import { buildErrorToolResult, noteForToolResult } from "../../src/tools/result.js";
 import { ok } from "../../src/core/result.js";
 import type { SidecarDocument } from "../../src/domain/artifact.js";
@@ -312,6 +312,50 @@ describe("ui/view-models, components, ticker, progress, and queue", () => {
 			PLAIN_THEME,
 		).join("\n");
 		expect(widget).not.toContain("/img");
+	});
+
+	// Regression: failed jobs stayed in the widget as "✖ … 0% generating…".
+	test("queue widget: a failed job shows its error, not the last live step", () => {
+		const size = new Size(512, 512);
+		let state = createInitialJobState({
+			id: "01JXA9FAIL0000000000000001",
+			request: makeSampleRequest(),
+			modelId: "google/gemini-image",
+			providerId: "google",
+			requestedSize: size,
+			producedSize: size,
+			createdAt: 1000,
+		});
+		state = reduceJob(state, { t: "start", at: 1000 });
+		state = reduceJob(state, { t: "phase", phase: "generating", at: 1100, detail: "generating…" });
+		state = reduceJob(state, {
+			t: "fail",
+			error: quotaExhausted("google/gemini-image", 429, "You have exhausted your capacity"),
+			at: 2700,
+		});
+		expect(state.detail).toBeUndefined();
+		expect(state.failedPhase).toBe("generating");
+
+		const widget = renderQueueWidget(
+			buildQueueWidgetVM({
+				snapshot: {
+					jobs: [state],
+					runningCount: 0,
+					queuedCount: 0,
+					failedCount: 1,
+					maxConcurrent: 1,
+					paused: false,
+					lastFinishedAt: 2700,
+				},
+				nowMs: 3000,
+				spinnerTick: 0,
+				noColor: true,
+			}),
+			200,
+			PLAIN_THEME,
+		).join("\n");
+		expect(widget).toContain("quota_exhausted 429");
+		expect(widget).not.toContain("generating…");
 	});
 
 	test("HUD: idle status shows the resolved host model; queue widget hidden until jobs exist", () => {

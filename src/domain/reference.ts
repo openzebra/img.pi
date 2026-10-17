@@ -3,7 +3,11 @@ import { configInvalid, type ImgError } from "../core/errors";
 import { err, ok, type Result } from "../core/result";
 
 export type ReferenceRole = "content" | "style" | "subject" | "composition" | "init" | "mask";
-export type ReferenceSourceKind = "path" | "url" | "data_uri" | "job_ref";
+/** `host_url`: a host-internal URL (e.g. omp `local://` for pasted images) the host resolves to a file. */
+export type ReferenceSourceKind = "path" | "url" | "data_uri" | "job_ref" | "host_url";
+
+/** `scheme://…` other than http(s); Windows drive paths (`C:\`) never carry `//`. */
+const HOST_URL_PATTERN = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 export type JobRefTarget =
 	| { readonly kind: "last"; readonly index: number }
@@ -43,6 +47,9 @@ export function classifyReferenceSource(source: string): ReferenceSourceKind {
 	}
 	if (trimmed.startsWith("@last") || trimmed.startsWith("@job:")) {
 		return "job_ref";
+	}
+	if (HOST_URL_PATTERN.test(trimmed)) {
+		return "host_url";
 	}
 	return "path";
 }

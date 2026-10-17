@@ -157,17 +157,35 @@ export async function writeGltfMaterialJson(input: GltfMaterialInput): Promise<R
 	return ok(targetPath);
 }
 
+/** Facts about a failed job that the request alone does not carry: where, with what, and how long. */
+export interface FailedJobDebug {
+	readonly host: string;
+	readonly provider: string;
+	readonly model: string;
+	readonly failedPhase?: string;
+	readonly durationMs?: number;
+	readonly phaseMs?: Readonly<Record<string, number>>;
+	readonly finalPrompt: string;
+	readonly negativePrompt?: string;
+	readonly references: readonly { readonly source: string; readonly kind: string; readonly role: string }[];
+	readonly warnings: readonly string[];
+	/** The error exactly as the agent saw it. */
+	readonly message: string;
+}
+
 export async function saveFailedJobRequest(
 	cwd: string,
 	jobId: string,
 	requestData: unknown,
 	errorData: unknown,
+	debug: FailedJobDebug,
 ): Promise<Result<string, ImgError>> {
 	const relPath = failedRequestRelPath(jobId);
 	const absPath = path.resolve(cwd, relPath);
 	const res = await atomicWriteJson(absPath, {
 		jobId,
 		failedAt: new Date().toISOString(),
+		debug,
 		request: requestData,
 		error: errorData,
 	});
