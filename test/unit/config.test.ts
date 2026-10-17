@@ -130,6 +130,16 @@ describe("config/store — atomic load & save round-trip", () => {
 				expect(reloaded.value.defaults.model).toBe("openai/gpt-image-1");
 				expect(reloaded.value.output.dir).toBe("custom/out");
 			}
+
+			// In-memory setScopeLayer updates effective config immediately
+			const updated = store2.setScopeLayer("project", {
+				defaults: { format: "webp" },
+			});
+			expect(updated.ok).toBe(true);
+			if (updated.ok) {
+				expect(updated.value.defaults.format).toBe("webp");
+			}
+			expect(store2.getEffective().defaults.format).toBe("webp");
 		} finally {
 			await fs.rm(tmpRoot, { recursive: true, force: true });
 		}

@@ -123,6 +123,25 @@ export class ConfigStore {
 		return ok(this.getEffective());
 	}
 
+	public setScopeLayer(scope: "user" | "project", patch: PartialConfig | undefined): Result<ImgConfig, ImgError> {
+		if (patch !== undefined) {
+			const validated = validatePartialConfig(patch);
+			if (!validated.ok) return validated;
+			if (scope === "user") {
+				this.#userLayer = validated.value;
+			} else {
+				this.#projectLayer = validated.value;
+			}
+		} else {
+			if (scope === "user") {
+				this.#userLayer = undefined;
+			} else {
+				this.#projectLayer = undefined;
+			}
+		}
+		return ok(this.getEffective());
+	}
+
 	public async saveScope(scope: "user" | "project", config: PartialConfig): Promise<Result<ImgConfig, ImgError>> {
 		const validated = validatePartialConfig({ ...config, version: 1 });
 		if (!validated.ok) return validated;

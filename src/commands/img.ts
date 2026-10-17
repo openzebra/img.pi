@@ -24,6 +24,14 @@ import {
 	buildTilePreviewVM,
 	SETTINGS_SECTIONS,
 } from "../ui/view-models.js";
+import {
+	cycleProviderKeyEnv,
+	cycleSettingValue,
+	getSectionFieldCount,
+	resetSettingValue,
+	SETTINGS_PROVIDERS,
+	testProviderConnection,
+} from "./settings-actions.js";
 
 export interface CommandDeps {
 	readonly configStore: ConfigStore;
@@ -84,6 +92,7 @@ export async function openStudioOverlay(
 	const firstModel = models[0];
 	let activeTab: StudioTabId = opts.initialTab ?? 1;
 	let modal: "none" | "model_picker" | "tile_preview" | "pbr_grid" | "help" = "none";
+	let pickerOrigin: "compose" | "settings" = "compose";
 
 	let composeState: ComposeState = {
 		prompt: opts.initialPrompt ?? "",
@@ -326,9 +335,9 @@ export async function openStudioOverlay(
 							return;
 						}
 						if (modal === "model_picker") {
-							if (data === "\x1b[A" || data === "k") {
+							if (data === "\x1b[A" || data === "\x1bOA" || data === "k") {
 								pickerSelectedIndex = Math.max(0, pickerSelectedIndex - 1);
-							} else if (data === "\x1b[B" || data === "j") {
+							} else if (data === "\x1b[B" || data === "\x1bOB" || data === "j") {
 								pickerSelectedIndex = Math.min(Math.max(0, models.length - 1), pickerSelectedIndex + 1);
 							} else if (data === "\r" || data === "\n") {
 								const pickerVM = buildModelPickerVM({
@@ -339,7 +348,17 @@ export async function openStudioOverlay(
 								});
 								const chosen = pickerVM.rows[pickerVM.selectedIndex];
 								if (chosen !== undefined) {
-									composeState = { ...composeState, model: chosen.id };
+									if (pickerOrigin === "settings") {
+										const layers = deps.configStore.getLayers();
+										const patch = (settingsScope === "project" ? layers.project : layers.user) ?? {};
+										deps.configStore.setScopeLayer(settingsScope, {
+											...patch,
+											defaults: { ...patch.defaults, model: chosen.id },
+										});
+										ctx.ui.notify(`Set default model to ${chosen.id} (${settingsScope})`, "info");
+									} else {
+										composeState = { ...composeState, model: chosen.id };
+									}
 								}
 								modal = "none";
 							}
@@ -414,8 +433,9 @@ export async function openStudioOverlay(
 					// Per-tab keyboard navigation
 					if (activeTab === 1) {
 						if (data === "m") {
+							pickerOrigin = "compose";
 							modal = "model_picker";
-						} else if (data === "\x1b[A" || data === "k") {
+						} else if (data === "\x1b[A" || data === "\x1bOA" || data === "k") {
 							composeState = {
 								...composeState,
 								focusedFieldIndex: Math.max(0, composeState.focusedFieldIndex - 1),
@@ -541,28 +561,138 @@ export async function openStudioOverlay(
 					}
 
 					// Active tab 5 (Settings)
-					if (data === "\t") {
+					const eff = deps.configStore.getEffective();
+					const secName = SETTINGS_SECTIONS[settingsSectionIndex] ?? "Defaults";
+					const fieldCount = getSectionFieldCount(secName, eff);
+
+					// Toggle scope
+					if (data === "s" || data === "S" || data === "\t") {
 						settingsScope = settingsScope === "project" ? "user" : "project";
-					} else if (data === "\x1b[A" || data === "k") {
-						if (settingsFieldIndex > 0) {
-							settingsFieldIndex--;
-						} else {
-							settingsSectionIndex = Math.max(0, settingsSectionIndex - 1);
-							settingsFieldIndex = 0;
-						}
-					} else if (data === "\x1b[B" || data === "j") {
+						ctx.ui.notify(`Settings scope: ${settingsScope}`, "info");
+						invalidateAndRender();
+						return;
+					}
+
+					// Direct jump between sections
+					if (data === "[" || data === "\x1b[5~") {
+						settingsSectionIndex = Math.max(0, settingsSectionIndex - 1);
+						settingsFieldIndex = 0;
+						invalidateAndRender();
+						return;
+					}
+					if (data === "]" || data === "\x1b[6~") {
 						settingsSectionIndex = Math.min(SETTINGS_SECTIONS.length - 1, settingsSectionIndex + 1);
 						settingsFieldIndex = 0;
-					} else if (data === "\x13") {
+						invalidateAndRender();
+						return;
+					}
+
+					// Navigate up
+					if (data === "\x1b[A" || data === "\x1bOA" || data === "k") {
+						if (settingsFieldIndex > 0) {
+							settingsFieldIndex--;
+						} else if (settingsSectionIndex > 0) {
+							settingsSectionIndex--;
+							const prevSec = SETTINGS_SECTIONS[settingsSectionIndex] ?? "Defaults";
+							const prevCount = getSectionFieldCount(prevSec, eff);
+							settingsFieldIndex = Math.max(0, prevCount - 1);
+						}
+						invalidateAndRender();
+						return;
+					}
+
+					// Navigate down
+					if (data === "\x1b[B" || data === "\x1bOB" || data === "j") {
+						if (settingsFieldIndex < fieldCount - 1) {
+							settingsFieldIndex++;
+						} else if (settingsSectionIndex < SETTINGS_SECTIONS.length - 1) {
+							settingsSectionIndex++;
+							settingsFieldIndex = 0;
+						}
+						invalidateAndRender();
+						return;
+					}
+
+					// Value adjustment: cycle left (← / h)
+					if (data === "\x1b[D" || data === "\x1bOD" || data === "h") {
+						const layers = deps.configStore.getLayers();
+						const currentPatch = (settingsScope === "project" ? layers.project : layers.user) ?? {};
+						const updated = cycleSettingValue(secName, settingsFieldIndex, -1, eff, currentPatch, models);
+						deps.configStore.setScopeLayer(settingsScope, updated);
+						invalidateAndRender();
+						return;
+					}
+
+					// Value adjustment: cycle right (→ / l)
+					if (data === "\x1b[C" || data === "\x1bOC" || data === "l") {
+						const layers = deps.configStore.getLayers();
+						const currentPatch = (settingsScope === "project" ? layers.project : layers.user) ?? {};
+						const updated = cycleSettingValue(secName, settingsFieldIndex, 1, eff, currentPatch, models);
+						deps.configStore.setScopeLayer(settingsScope, updated);
+						invalidateAndRender();
+						return;
+					}
+
+					// Edit / activate: Enter or Space
+					if (data === "\r" || data === "\n" || (secName === "Providers" && data === " ")) {
+						if (secName === "Defaults" && settingsFieldIndex === 0) {
+							pickerOrigin = "settings";
+							pickerSelectedIndex = 0;
+							modal = "model_picker";
+						} else {
+							const layers = deps.configStore.getLayers();
+							const currentPatch = (settingsScope === "project" ? layers.project : layers.user) ?? {};
+							const updated = cycleSettingValue(secName, settingsFieldIndex, 1, eff, currentPatch, models);
+							deps.configStore.setScopeLayer(settingsScope, updated);
+						}
+						invalidateAndRender();
+						return;
+					}
+
+					// Reset to inherited: u
+					if (data === "u" || data === "U") {
+						const layers = deps.configStore.getLayers();
+						const currentPatch = (settingsScope === "project" ? layers.project : layers.user) ?? {};
+						const res = resetSettingValue(secName, settingsFieldIndex, currentPatch);
+						deps.configStore.setScopeLayer(settingsScope, res.patch);
+						ctx.ui.notify(`Reset ${res.label} in ${settingsScope} scope to inherited`, "info");
+						invalidateAndRender();
+						return;
+					}
+
+					// Providers actions: t (test connection) and k (cycle key env)
+					if (secName === "Providers") {
+						const pId = SETTINGS_PROVIDERS[settingsFieldIndex] ?? "host";
+						if (data === "t") {
+							const testRes = testProviderConnection(pId, eff, models.length);
+							ctx.ui.notify(testRes.message, testRes.type);
+							invalidateAndRender();
+							return;
+						}
+						if (data === "k") {
+							const layers = deps.configStore.getLayers();
+							const currentPatch = (settingsScope === "project" ? layers.project : layers.user) ?? {};
+							const keyRes = cycleProviderKeyEnv(pId, eff, currentPatch);
+							deps.configStore.setScopeLayer(settingsScope, keyRes.patch);
+							ctx.ui.notify(keyRes.message, "info");
+							invalidateAndRender();
+							return;
+						}
+					}
+
+					// Save: Ctrl+S
+					if (data === "\x13") {
 						const layers = deps.configStore.getLayers();
 						const patch = (settingsScope === "project" ? layers.project : layers.user) ?? {};
 						void deps.configStore.saveScope(settingsScope, patch).then(res => {
 							if (res.ok) {
-								ctx.ui.notify(`Saved ${settingsScope} settings`, "info");
+								ctx.ui.notify(`Saved ${settingsScope} settings (${deps.projectDirName}/img-pi.json)`, "info");
 							} else {
-								ctx.ui.notify(`Failed to save settings`, "error");
+								ctx.ui.notify(`Failed to save settings: ${res.error.kind}`, "error");
 							}
 						});
+						invalidateAndRender();
+						return;
 					}
 					invalidateAndRender();
 				} catch (e: unknown) {
