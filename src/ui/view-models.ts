@@ -67,11 +67,8 @@ export class MemoizedComponent<V extends HashedVM> implements ComponentLike {
 export interface CallVM extends HashedVM {
 	readonly toolName: string;
 	readonly prompt: string;
-	readonly modelLabel: string;
-	readonly sizeLabel: string;
-	readonly count: number;
-	readonly format: string;
-	readonly outputDir: string;
+	/** Only the parameters the caller actually passed (model, size, count, format, output dir). */
+	readonly params: readonly string[];
 	readonly noColor: boolean;
 }
 
@@ -81,33 +78,46 @@ export function buildCallVM(input: {
 	readonly model?: string;
 	readonly width?: number;
 	readonly height?: number;
+	readonly aspectRatio?: string;
 	readonly count?: number;
 	readonly format?: string;
 	readonly outputDir?: string;
 	readonly noColor?: boolean;
 }): CallVM {
-	const modelLabel = input.model ?? "auto";
-	const sizeLabel =
-		input.width !== undefined && input.height !== undefined ? `${input.width}×${input.height}` : "auto";
-	const count = input.count ?? 1;
-	const format = input.format ?? "png";
-	const outputDir = input.outputDir ?? ARTIFACT_PATHS.images;
-	const noColor = input.noColor ?? false;
+	const params = [
+		input.model,
+		input.width !== undefined && input.height !== undefined ? `${input.width}×${input.height}` : input.aspectRatio,
+		input.count !== undefined && input.count > 1 ? `×${input.count}` : undefined,
+		input.format,
+		input.outputDir !== undefined ? `→ ${input.outputDir}` : undefined,
+	].filter((p): p is string => p !== undefined && p.length > 0);
+	const payload = { toolName: input.toolName, prompt: input.prompt, params, noColor: input.noColor ?? false };
+	return deepFreeze({ ...payload, hash: computeHashCode(payload) });
+}
 
+export type NoteTone = "done" | "failed" | "cancelled";
+
+/** A finished tool call without job state: an early error, a cancel, or a text-only result. */
+export interface NoteVM extends HashedVM {
+	readonly toolName: string;
+	readonly tone: NoteTone;
+	readonly lines: readonly string[];
+	readonly noColor: boolean;
+}
+
+export function buildNoteVM(input: {
+	readonly toolName: string;
+	readonly tone: NoteTone;
+	readonly text: string;
+	readonly noColor?: boolean;
+}): NoteVM {
 	const payload = {
 		toolName: input.toolName,
-		prompt: input.prompt,
-		modelLabel,
-		sizeLabel,
-		count,
-		format,
-		outputDir,
-		noColor,
+		tone: input.tone,
+		lines: input.text.split("\n"),
+		noColor: input.noColor ?? false,
 	};
-	return deepFreeze({
-		...payload,
-		hash: computeHashCode(payload),
-	});
+	return deepFreeze({ ...payload, hash: computeHashCode(payload) });
 }
 
 export interface ArtifactRowVM {

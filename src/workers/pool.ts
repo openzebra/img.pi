@@ -22,6 +22,20 @@ export interface WorkerRunOptions {
 export interface WorkerPoolOptions {
 	readonly size?: number;
 	readonly defaultTimeoutMs?: number;
+	/** Worker entry; defaults to {@link workerModuleUrl} of this module. */
+	readonly workerUrl?: URL;
+}
+
+/**
+ * Where the worker entry lives relative to the module running the pool:
+ * - sources: `src/workers/pool.ts` → `./image.worker.ts` (same directory);
+ * - bundle: the pool is inlined into `dist/index.js`, and `package.json#scripts.build`
+ *   emits the worker at `dist/workers/image.worker.js`.
+ */
+export function workerModuleUrl(moduleUrl: string): URL {
+	return moduleUrl.endsWith(".ts")
+		? new URL("./image.worker.ts", moduleUrl)
+		: new URL("./workers/image.worker.js", moduleUrl);
 }
 
 interface PendingTask {
@@ -37,6 +51,8 @@ interface ActiveSlot {
 	readonly worker: Worker;
 	busy: boolean;
 	currentTaskId: string | undefined;
+	/** Set once the worker has answered a task; an error before that means it cannot start. */
+	responded: boolean;
 }
 
 function isWorkerResponseMessage(v: unknown): v is WorkerResponseMessage {
@@ -64,12 +80,16 @@ export class WorkerPool {
 		}
 	>();
 	private terminated = false;
+	private readonly workerUrl: URL;
+	/** Set when the worker cannot start (missing entry, native module load failure). Never respawned. */
+	private startupFailure: string | undefined;
 
 	public constructor(options: WorkerPoolOptions = {}) {
 		const cpuCount = typeof os.availableParallelism === "function" ? os.availableParallelism() : 2;
 		const defaultSize = Math.max(1, Math.min(4, cpuCount - 1));
 		this.poolSize = options.size ?? defaultSize;
 		this.defaultTimeoutMs = options.defaultTimeoutMs ?? 60_000;
+		this.workerUrl = options.workerUrl ?? workerModuleUrl(import.meta.url);
 	}
 
 	public get size(): number {
@@ -85,6 +105,9 @@ export class WorkerPool {
 		}
 		if (options.signal?.aborted === true) {
 			return err(abortedError());
+		}
+		if (this.startupFailure !== undefined) {
+			return err(workerFailed(payload.op, this.startupFailure));
 		}
 
 		this.ensureWorkers();
@@ -146,13 +169,12 @@ export class WorkerPool {
 	}
 
 	private createSlot(): ActiveSlot {
-		const isTs = import.meta.url.endsWith(".ts");
-		const workerUrl = new URL(isTs ? "./image.worker.ts" : "./image.worker.js", import.meta.url);
-		const worker = new Worker(workerUrl);
+		const worker = new Worker(this.workerUrl);
 		const slot: ActiveSlot = {
 			worker,
 			busy: false,
 			currentTaskId: undefined,
+			responded: false,
 		};
 
 		worker.on("message", (raw: unknown) => {
@@ -166,6 +188,7 @@ export class WorkerPool {
 			this.cleanupInFlight(raw.id);
 			slot.busy = false;
 			slot.currentTaskId = undefined;
+			slot.responded = true;
 
 			if (raw.ok) {
 				inflight.task.resolve(ok(raw.result));
@@ -176,6 +199,11 @@ export class WorkerPool {
 		});
 
 		worker.on("error", (error: unknown) => {
+			const message = error instanceof Error ? error.message : String(error);
+			if (!slot.responded) {
+				this.failStartup(`image worker failed to start (${this.workerUrl.pathname}): ${message}`);
+				return;
+			}
 			const currentId = slot.currentTaskId;
 			slot.busy = false;
 			slot.currentTaskId = undefined;
@@ -183,7 +211,6 @@ export class WorkerPool {
 				const inflight = this.inFlight.get(currentId);
 				if (inflight !== undefined) {
 					this.cleanupInFlight(currentId);
-					const message = error instanceof Error ? error.message : String(error);
 					inflight.task.resolve(err(workerFailed(inflight.task.op, message)));
 				}
 			}
@@ -192,6 +219,25 @@ export class WorkerPool {
 		});
 
 		return slot;
+	}
+
+	/** Fail everything once, stop all workers, and never respawn: retrying a broken entry would loop forever. */
+	private failStartup(message: string): void {
+		if (this.startupFailure !== undefined) {
+			return;
+		}
+		this.startupFailure = message;
+		for (const id of Array.from(this.inFlight.keys())) {
+			const entry = this.inFlight.get(id);
+			this.cleanupInFlight(id);
+			entry?.task.resolve(err(workerFailed(entry.task.op, message)));
+		}
+		for (const pending of this.queue.splice(0)) {
+			pending.resolve(err(workerFailed(pending.op, message)));
+		}
+		for (const slot of this.slots.splice(0)) {
+			void slot.worker.terminate();
+		}
 	}
 
 	private replaceSlot(brokenSlot: ActiveSlot): void {
@@ -218,7 +264,7 @@ export class WorkerPool {
 	}
 
 	private drainQueue(): void {
-		if (this.terminated) {
+		if (this.terminated || this.startupFailure !== undefined) {
 			return;
 		}
 		for (const slot of this.slots) {

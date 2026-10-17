@@ -14,6 +14,7 @@ import type { ResolvedModelEntry } from "../providers/registry.js";
 import { renderCallCard } from "../ui/components/job-card.js";
 import { buildCallVM, MemoizedComponent } from "../ui/view-models.js";
 import type { ToolRuntimeDeps } from "./result.js";
+import { noteForToolResult } from "./result.js";
 import type { ImgListModelsParams } from "./schemas.js";
 import { IMG_LIST_MODELS_SCHEMA } from "./schemas.js";
 
@@ -124,13 +125,7 @@ export function createImgListModelsTool(deps: ToolRuntimeDeps): PortableTool<Img
 			_opts: PortableRenderResultOpts,
 			theme: PortableTheme,
 		): ComponentLike {
-			const count = result.details?.models.length ?? 0;
-			const vm = buildCallVM({
-				toolName: "img_list_models",
-				prompt: `${count} models available`,
-				noColor,
-			});
-			return new MemoizedComponent(vm, renderCallCard, theme);
+			return noteForToolResult("img_list_models", result, theme);
 		},
 	};
 }

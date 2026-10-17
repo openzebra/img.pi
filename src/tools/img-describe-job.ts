@@ -13,6 +13,7 @@ import type {
 import { renderCallCard } from "../ui/components/job-card.js";
 import { buildCallVM, MemoizedComponent } from "../ui/view-models.js";
 import type { ToolRuntimeDeps } from "./result.js";
+import { noteForToolResult } from "./result.js";
 import type { ImgDescribeJobParams } from "./schemas.js";
 import { IMG_DESCRIBE_JOB_SCHEMA } from "./schemas.js";
 
@@ -92,12 +93,7 @@ export function createImgDescribeJobTool(
 			const first = result.details?.sidecars[0];
 			const summary =
 				first !== undefined ? `${first.job} · ${first.model} · seed ${first.seed}` : (args?.job ?? "@last");
-			const vm = buildCallVM({
-				toolName: "img_describe_job",
-				prompt: summary,
-				noColor,
-			});
-			return new MemoizedComponent(vm, renderCallCard, theme);
+			return noteForToolResult("img_describe_job", result, theme, result.isError === true ? undefined : summary);
 		},
 	};
 }

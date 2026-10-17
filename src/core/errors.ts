@@ -175,7 +175,9 @@ export function formatImgError(error: ImgError): string {
 		case "ref_unreadable":
 			return `ref_unreadable (${error.source}): ${error.reason}`;
 		case "path_forbidden":
-			return `path_forbidden (${error.reason}): ${error.path}`;
+			return error.reason === "outside_root"
+				? `path_forbidden (outside_root): ${error.path} — images are saved inside the project (.pi/img); copy the file afterwards, or set output.allowOutsideCwd: true in img-pi.json`
+				: `path_forbidden (${error.reason}): ${error.path}`;
 		case "provider_http":
 			return `provider_http ${error.status} · ${error.provider} · ${error.body}`;
 		case "content_policy":

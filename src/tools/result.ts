@@ -28,10 +28,10 @@ import type {
 import type { DurationStatsStore } from "../jobs/progress.js";
 import { createThrottledEmitter } from "../jobs/progress.js";
 import type { ExecutedJobResult, PipelineDeps } from "../pipeline/run.js";
-import { renderCallCard, renderJobCard } from "../ui/components/job-card.js";
+import { renderCallCard, renderJobCard, renderNoteCard } from "../ui/components/job-card.js";
 import { formatBytes, formatCompactSeconds } from "../ui/theme.js";
 import type { SharedTicker } from "../ui/ticker.js";
-import { buildCallVM, buildJobCardVM, MemoizedComponent } from "../ui/view-models.js";
+import { buildCallVM, buildJobCardVM, buildNoteVM, MemoizedComponent } from "../ui/view-models.js";
 import type { ImgEditParams, ImgGenerateParams, ImgTextureParams, RawPostInput, RawReferenceInput } from "./schemas.js";
 
 export interface GenerateDetails {
@@ -442,6 +442,22 @@ export function createProgressReporter(onUpdate: PortableToolUpdateCallback<Gene
 	};
 }
 
+/**
+ * Card for a finished call without job state. Tone comes from the result itself:
+ * `isError` → failed; no details (abort path of `buildErrorToolResult`) → cancelled; otherwise done.
+ */
+export function noteForToolResult<D>(
+	toolName: string,
+	result: PortableToolResult<D>,
+	theme: PortableTheme,
+	text?: string,
+): ComponentLike {
+	const tone = result.isError === true ? "failed" : result.details === undefined ? "cancelled" : "done";
+	const body = text ?? (result.content[0]?.type === "text" ? result.content[0].text : toolName);
+	const vm = buildNoteVM({ toolName, tone, text: body, noColor: process.env["NO_COLOR"] !== undefined });
+	return new MemoizedComponent(vm, renderNoteCard, theme);
+}
+
 /** Vertical stack: the job card, then the inline host image. */
 function stackComponents(parts: readonly ComponentLike[]): ComponentLike {
 	return {
@@ -491,6 +507,7 @@ export function createPortableJobRenderers<P extends Record<string, unknown>>(
 				...(typeof args["model"] === "string" ? { model: args["model"] } : {}),
 				...(typeof args["width"] === "number" ? { width: args["width"] } : {}),
 				...(typeof args["height"] === "number" ? { height: args["height"] } : {}),
+				...(typeof args["aspect_ratio"] === "string" ? { aspectRatio: args["aspect_ratio"] } : {}),
 				...(typeof args["count"] === "number" ? { count: args["count"] } : {}),
 				...(typeof args["format"] === "string" ? { format: args["format"] } : {}),
 				...(typeof args["output_dir"] === "string" ? { outputDir: args["output_dir"] } : {}),
@@ -502,18 +519,10 @@ export function createPortableJobRenderers<P extends Record<string, unknown>>(
 			result: PortableToolResult<GenerateDetails>,
 			opts: PortableRenderResultOpts,
 			theme: PortableTheme,
-			args?: P,
 		): ComponentLike => {
 			const state = result.details?.state;
 			if (state === undefined) {
-				const fallbackText = result.content[0]?.type === "text" ? result.content[0].text : toolName;
-				const vm = buildCallVM({
-					toolName,
-					prompt: fallbackText,
-					...(typeof args?.["model"] === "string" ? { model: args["model"] } : {}),
-					noColor,
-				});
-				return new MemoizedComponent(vm, renderCallCard, theme);
+				return noteForToolResult(toolName, result, theme);
 			}
 			const tauMs = deps.stats.getTauMs(state.providerId, state.modelId, state.producedSize);
 			const vm = buildJobCardVM({

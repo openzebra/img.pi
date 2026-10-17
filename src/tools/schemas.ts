@@ -328,7 +328,8 @@ export const OUTPUT_FIELDS = {
 	output_dir: defineField<string>({
 		jsonSchema: {
 			type: "string",
-			description: "Output directory relative to cwd (default '.pi/img/images').",
+			description:
+				"Output directory inside the project (default '.pi/img/images'). Paths outside the project are rejected unless output.allowOutsideCwd is set; to deliver elsewhere, generate here and copy the file.",
 		},
 		arkDef: "string",
 	}),

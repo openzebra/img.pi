@@ -3,7 +3,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DEFAULT_CONFIG } from "../../src/config/schema.js";
-import { providerHttp } from "../../src/core/errors.js";
+import { abortedError, providerHttp, workerFailed } from "../../src/core/errors.js";
+import { buildErrorToolResult, noteForToolResult } from "../../src/tools/result.js";
 import { ok } from "../../src/core/result.js";
 import type { SidecarDocument } from "../../src/domain/artifact.js";
 import { Artifact, SIDECAR_SCHEMA_VERSION } from "../../src/domain/artifact.js";
@@ -280,6 +281,37 @@ describe("ui/view-models, components, ticker, progress, and queue", () => {
 		expect(f80.join("\n")).toContain("transient provider error; ask to retry");
 		expect(f80.join("\n")).toContain(`request saved: .pi/img/failed/${failedState.id}.json`);
 		expect(f80.join("\n")).not.toMatch(/\/img:|r retry/);
+	});
+
+	test("cards: call card shows only given params; stateless failure/cancel render as failed/cancelled, never queued", () => {
+		const call = renderCallCard(
+			buildCallVM({ toolName: "img_generate", prompt: "a cat", aspectRatio: "3:2", noColor: true }),
+			100,
+			PLAIN_THEME,
+		).join("\n");
+		expect(call).toContain('"a cat"');
+		expect(call).toContain("3:2");
+		expect(call).not.toMatch(/queued #|esc cancel|auto/);
+
+		const failed = buildErrorToolResult(workerFailed("decode_b64", "Cannot find module 'image.worker.js'"));
+		const failedCard = noteForToolResult("img_generate", failed, PLAIN_THEME).render(100).join("\n");
+		expect(failedCard).toContain("worker_failed (decode_b64): Cannot find module 'image.worker.js'");
+		expect(failedCard).not.toMatch(/queued|esc cancel/);
+
+		const cancelled = noteForToolResult("img_generate", buildErrorToolResult(abortedError()), PLAIN_THEME);
+		expect(cancelled.render(100).join("\n")).toContain("cancelled");
+
+		const widget = renderQueueWidget(
+			buildQueueWidgetVM({
+				snapshot: new JobQueue(DEFAULT_CONFIG).snapshot(),
+				nowMs: 0,
+				spinnerTick: 0,
+				noColor: true,
+			}),
+			80,
+			PLAIN_THEME,
+		).join("\n");
+		expect(widget).not.toContain("/img");
 	});
 
 	test("HUD: idle status shows the resolved host model; queue widget hidden until jobs exist", () => {

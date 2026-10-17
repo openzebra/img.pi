@@ -1,6 +1,6 @@
 import type { PortableTheme } from "../../host/port.js";
 import { getGlyphs, getSpinnerFrame } from "../glyphs.js";
-import { fitVisibleLine, padEndVisible, repeatChar, visibleWidth } from "../theme.js";
+import { fitVisibleLine, padEndVisible, repeatChar } from "../theme.js";
 import type { QueueWidgetVM } from "../view-models.js";
 
 export function renderQueueWidget(vm: QueueWidgetVM, width: number, theme: PortableTheme): string[] {
@@ -9,10 +9,7 @@ export function renderQueueWidget(vm: QueueWidgetVM, width: number, theme: Porta
 	}
 
 	const g = getGlyphs(vm.noColor);
-	const leftHead = ` img ${g.pointer} ${vm.runningCount} running ${g.bullet} ${vm.queuedCount} queued`;
-	const rightHead = "/img:queue";
-	const headGap = Math.max(2, width - visibleWidth(leftHead) - visibleWidth(rightHead));
-	const headerLine = `${theme.bold(leftHead)}${repeatChar(" ", headGap)}${theme.fg("muted", rightHead)}`;
+	const headerLine = theme.bold(` img ${g.pointer} ${vm.runningCount} running ${g.bullet} ${vm.queuedCount} queued`);
 
 	const lines = new Array<string>(vm.items.length + 1);
 	lines[0] = fitVisibleLine(headerLine, width);
