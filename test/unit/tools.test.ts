@@ -3,13 +3,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ConfigStore } from "../../src/config/store.js";
-import { OmpHost } from "../../src/host/omp.js";
-import { wrapPortableCtx } from "../../src/host/omp.js";
+import { wrapPortableCtx } from "../../src/host/base.js";
 import { DurationStatsStore } from "../../src/jobs/progress.js";
 import { JobQueue } from "../../src/jobs/queue.js";
 import type { PipelineDeps } from "../../src/pipeline/run.js";
 import { HttpClient } from "../../src/providers/http.js";
-import { SecretResolver } from "../../src/providers/port.js";
 import { ProviderRegistry } from "../../src/providers/registry.js";
 import { ManifestStore } from "../../src/storage/manifest.js";
 import { createImgDescribeJobTool } from "../../src/tools/img-describe-job.js";
@@ -30,24 +28,25 @@ import {
 import { PLAIN_THEME } from "../../src/ui/theme.js";
 import { SharedTicker } from "../../src/ui/ticker.js";
 import { WorkerPool } from "../../src/workers/pool.js";
+import { FakeHost, GOOGLE_IMAGE_MODEL, TEXT_ONLY_IMAGE_MODEL } from "../fixtures/fake-host.js";
 
 describe("tools: schemas & execution", () => {
 	let tmpDir = "";
 	let pool: WorkerPool;
 	let runtimeDeps: ToolRuntimeDeps;
+	let host: FakeHost;
 
 	beforeAll(async () => {
 		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "img-pi-tools-"));
 		pool = new WorkerPool({ size: 2 });
 
-		const host = new OmpHost({ arktype: true });
+		host = new FakeHost(path.join(tmpDir, ".omp-agent"), [GOOGLE_IMAGE_MODEL, TEXT_ONLY_IMAGE_MODEL]);
 		const configStore = new ConfigStore({
 			agentDir: path.join(tmpDir, ".omp-agent"),
 			cwd: tmpDir,
 			projectDirName: ".omp",
 		});
 		const http = new HttpClient();
-		const secrets = new SecretResolver({});
 		const registry = new ProviderRegistry();
 		const manifest = new ManifestStore();
 		const stats = new DurationStatsStore(path.join(tmpDir, ".omp-agent"));
@@ -61,7 +60,6 @@ describe("tools: schemas & execution", () => {
 				config: configStore.getEffective(),
 				pool,
 				http,
-				secrets,
 				registry,
 				manifest,
 				queue,
@@ -69,6 +67,8 @@ describe("tools: schemas & execution", () => {
 			}),
 			ticker,
 			stats,
+			imageComponent: host.imageComponent,
+			previewOptions: () => ({ maxWidthCells: 40, maxHeightCells: 14 }),
 		};
 	});
 
@@ -114,7 +114,7 @@ describe("tools: schemas & execution", () => {
 		expect(okVar.ok).toBe(true);
 
 		const okList = IMG_LIST_MODELS_SCHEMA.validate({
-			provider: "mock",
+			provider: "google",
 			capability: "txt2img",
 		});
 		expect(okList.ok).toBe(true);
@@ -125,7 +125,7 @@ describe("tools: schemas & execution", () => {
 		expect(okDesc.ok).toBe(true);
 	});
 
-	test("img_generate executes dry_run and full mock/solid generation with sidecar and manifest", async () => {
+	test("img_generate executes dry_run and a host generation, saving under .pi/img with sidecar and manifest", async () => {
 		const genTool = createImgGenerateTool(runtimeDeps);
 		const ctx = wrapPortableCtx({ cwd: tmpDir, mode: "print" });
 
@@ -134,7 +134,7 @@ describe("tools: schemas & execution", () => {
 			"call-dry",
 			{
 				prompt: "red cube on white table",
-				model: "mock/solid",
+				model: GOOGLE_IMAGE_MODEL.id,
 				width: 128,
 				height: 128,
 				dry_run: true,
@@ -148,12 +148,12 @@ describe("tools: schemas & execution", () => {
 		const dryText = dryRes.content[0]?.type === "text" ? dryRes.content[0].text : "";
 		expect(dryText).toContain("dry_run");
 
-		// 2. Real generation with mock/solid
+		// 2. Real generation through the (fake) host
 		const genRes = await genTool.execute(
 			"call-gen-1",
 			{
 				prompt: "emerald crystal shard",
-				model: "mock/solid",
+				model: GOOGLE_IMAGE_MODEL.id,
 				width: 128,
 				height: 128,
 				seed: 42,
@@ -166,6 +166,10 @@ describe("tools: schemas & execution", () => {
 		expect(genRes.isError).toBe(false);
 		expect(genRes.details?.artifacts.length).toBe(1);
 		expect(genRes.details?.seed).toBe(42);
+		expect(genRes.details?.artifacts[0]?.relativePath.startsWith(".pi/img/images/")).toBe(true);
+		const manifestText = await fs.readFile(path.join(tmpDir, ".pi/img/manifest.jsonl"), "utf8");
+		expect(manifestText).toContain("emerald crystal shard");
+		expect(host.requests.at(-1)).toMatchObject({ model: GOOGLE_IMAGE_MODEL.id, aspectRatio: "1:1" });
 		// Should include text summary + thumbnail image
 		expect(genRes.content.length).toBe(2);
 		expect(genRes.content[1]?.type).toBe("image");
@@ -174,7 +178,7 @@ describe("tools: schemas & execution", () => {
 		const callComp = genTool.renderCall?.({ prompt: "emerald crystal shard" }, PLAIN_THEME);
 		expect(callComp?.render(80).length).toBeGreaterThan(0);
 		const resComp = genTool.renderResult?.(genRes, { expanded: true, isPartial: false }, PLAIN_THEME);
-		expect(resComp?.render(80).length).toBeGreaterThan(0);
+		expect(resComp?.render(80).at(-1)).toBe("[image]");
 	});
 
 	test("img_describe_job inspects @last and job ID prefix", async () => {
@@ -201,7 +205,7 @@ describe("tools: schemas & execution", () => {
 		}
 	});
 
-	test("img_edit edits @last image using mock/solid", async () => {
+	test("img_edit edits @last image through the host", async () => {
 		const editTool = createImgEditTool(runtimeDeps);
 		const ctx = wrapPortableCtx({ cwd: tmpDir, mode: "print" });
 
@@ -210,7 +214,7 @@ describe("tools: schemas & execution", () => {
 			{
 				image: "@last",
 				prompt: "add golden rim light",
-				model: "mock/solid",
+				model: GOOGLE_IMAGE_MODEL.id,
 				width: 128,
 				height: 128,
 				return_image: "none",
@@ -232,7 +236,7 @@ describe("tools: schemas & execution", () => {
 			"call-tex-1",
 			{
 				material: "weathered basalt cobblestone",
-				model: "mock/solid",
+				model: GOOGLE_IMAGE_MODEL.id,
 				resolution: 256,
 				maps: ["albedo", "normal", "roughness", "ao", "height"],
 				orm_pack: true,
@@ -270,7 +274,7 @@ describe("tools: schemas & execution", () => {
 			{
 				base: {
 					prompt: "brass gear icon",
-					model: "mock/solid",
+					model: GOOGLE_IMAGE_MODEL.id,
 					width: 128,
 					height: 128,
 				},
@@ -290,19 +294,57 @@ describe("tools: schemas & execution", () => {
 		expect(varRes.content.length).toBe(2);
 	});
 
-	test("img_list_models lists mock provider models with capabilities", async () => {
+	test("img_list_models lists host models, grouped by provider, with the default marked", async () => {
 		const listTool = createImgListModelsTool(runtimeDeps);
 		const ctx = wrapPortableCtx({ cwd: tmpDir, mode: "print" });
 
 		const listRes = await listTool.execute(
 			"call-list-1",
-			{ provider: "mock", capability: "txt2img" },
+			{ provider: "google", capability: "txt2img" },
 			undefined,
 			undefined,
 			ctx,
 		);
 		expect(listRes.isError).toBe(false);
-		expect(listRes.details?.models.some(m => m.id === "mock/solid")).toBe(true);
+		expect(listRes.details?.models.some(m => m.id === GOOGLE_IMAGE_MODEL.id)).toBe(true);
+		expect(listRes.details?.defaultModelId).toBe(GOOGLE_IMAGE_MODEL.id);
+		const text = listRes.content[0]?.type === "text" ? listRes.content[0].text : "";
+		expect(text).toContain("Google");
+		expect(text).toContain(`${GOOGLE_IMAGE_MODEL.id} · Gemini Image · generate + edit  ← default`);
+		expect(text).not.toMatch(/\$|cost|key/i);
+	});
+
+	test("img_generate without a model uses the host default and reports only host-reported cost", async () => {
+		host.costPerCallUsd = 0.039;
+		try {
+			const res = await createImgGenerateTool(runtimeDeps).execute(
+				"call-default",
+				{ prompt: "a ginger cat on a windowsill", aspect_ratio: "3:2" },
+				undefined,
+				undefined,
+				wrapPortableCtx({ cwd: tmpDir, mode: "print" }),
+			);
+			expect(res.isError).toBe(false);
+			expect(res.details?.model).toBe(GOOGLE_IMAGE_MODEL.id);
+			expect(host.requests.at(-1)?.aspectRatio).toBe("3:2");
+			const text = res.content[0]?.type === "text" ? res.content[0].text : "";
+			expect(text).toContain("cost: $0.0390 (reported by host)");
+		} finally {
+			host.costPerCallUsd = undefined;
+		}
+	});
+
+	test("img_edit rejects a host model that does not accept input images", async () => {
+		const res = await createImgEditTool(runtimeDeps).execute(
+			"call-edit-text-only",
+			{ image: "@last", prompt: "make it blue", model: TEXT_ONLY_IMAGE_MODEL.id },
+			undefined,
+			undefined,
+			wrapPortableCtx({ cwd: tmpDir, mode: "print" }),
+		);
+		expect(res.isError).toBe(true);
+		const text = res.content[0]?.type === "text" ? res.content[0].text : "";
+		expect(text).toContain("unsupported");
 	});
 
 	test("aborted tool call returns isError: false (cancelled, not failed)", async () => {
@@ -315,7 +357,7 @@ describe("tools: schemas & execution", () => {
 			"call-abort",
 			{
 				prompt: "cancelled generation",
-				model: "mock/solid",
+				model: GOOGLE_IMAGE_MODEL.id,
 				width: 128,
 				height: 128,
 			},

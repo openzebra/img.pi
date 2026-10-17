@@ -168,17 +168,18 @@ export function renderJobCard(vm: JobCardVM, width: number, theme: PortableTheme
 	if (vm.phase === "failed") {
 		const headerLeft = `${theme.fg("error", g.failed)} ${theme.bold(vm.toolName)}`;
 		const headerRight = vm.stopwatch;
-		const errLine = theme.fg("error", vm.errorSummary ?? "Generation failed");
-		const sugLine = vm.errorSuggestion ?? "→ retry or switch model with /img:model";
-		const savedLeft = `request saved: ${vm.failedSavePath ?? `.img-pi/failed/${vm.shortId}.json`}`;
-		const retryRight = `${theme.fg("accent", "r")} ${theme.fg("muted", "retry")}`;
-		const gap = Math.max(2, innerW - visibleWidth(savedLeft) - visibleWidth(retryRight));
-		const savedLine = `${theme.fg("muted", savedLeft)}${" ".repeat(gap)}${retryRight}`;
+		const bodyLines = [theme.fg("error", vm.errorSummary ?? "Generation failed")];
+		if (vm.errorSuggestion !== undefined) {
+			bodyLines.push(vm.errorSuggestion);
+		}
+		if (vm.failedSavePath !== undefined) {
+			bodyLines.push(theme.fg("muted", `request saved: ${vm.failedSavePath}`));
+		}
 
 		return renderRoundBox({
 			headerLeft,
 			headerRight,
-			bodyLines: [errLine, sugLine, savedLine],
+			bodyLines,
 			width,
 			theme,
 			noColor: vm.noColor,

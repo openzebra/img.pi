@@ -16,6 +16,9 @@ import { TextureSpec } from "../domain/texture.js";
 import type {
 	AgentToolContentItem,
 	ComponentLike,
+	ImageBytes,
+	ImageComponentFactory,
+	ImageRenderOpts,
 	PortableCtx,
 	PortableRenderResultOpts,
 	PortableTheme,
@@ -110,6 +113,7 @@ export function buildGenerateRequest(
 		...(params.height !== undefined ? { height: params.height } : {}),
 		...(params.aspect_ratio !== undefined ? { aspectRatio: params.aspect_ratio } : {}),
 		...(params.resolution !== undefined ? { resolution: params.resolution } : {}),
+		...(params.image_size !== undefined ? { imageSize: params.image_size } : {}),
 	};
 
 	return GenerationRequest.create({
@@ -201,6 +205,7 @@ export function buildEditRequest(params: ImgEditParams, config: ImgConfig): Resu
 		...(params.height !== undefined ? { height: params.height } : {}),
 		...(params.aspect_ratio !== undefined ? { aspectRatio: params.aspect_ratio } : {}),
 		...(params.resolution !== undefined ? { resolution: params.resolution } : {}),
+		...(params.image_size !== undefined ? { imageSize: params.image_size } : {}),
 	};
 
 	return GenerationRequest.create({
@@ -318,9 +323,7 @@ export function buildGenerateDetails(state: JobState, dryRun = false): GenerateD
 export function formatJobCompletionText(execRes: ExecutedJobResult): string {
 	const { job } = execRes;
 	if (execRes.dryRun) {
-		const lines = [
-			`dry_run · ${job.modelId} · ${job.producedSize.format()} · ×${job.request.count} · est. $${execRes.estimatedCostUsd.toFixed(2)}`,
-		];
+		const lines = [`dry_run · ${job.modelId} · ${job.producedSize.format()} · ×${job.request.count}`];
 		if (job.warnings.length > 0) {
 			lines.push(`warnings: ${job.warnings.join("; ")}`);
 		}
@@ -336,8 +339,11 @@ export function formatJobCompletionText(execRes: ExecutedJobResult): string {
 		execRes.textureExtra?.seamScore !== undefined ? ` · seam score ${execRes.textureExtra.seamScore.toFixed(1)}` : "";
 
 	const lines: string[] = [
-		`generated ${count} ${noun} · ${job.modelId} · ${job.producedSize.format()} · seed ${job.request.seed} · ${formatCompactSeconds(totalMs)}${seamExtra}`,
+		`generated ${count} ${noun} · ${job.modelId} · ${job.producedSize.format()} · ${formatCompactSeconds(totalMs)}${seamExtra}`,
 	];
+	if (job.usage?.costUsd !== undefined) {
+		lines.push(`cost: $${job.usage.costUsd.toFixed(4)} (reported by host)`);
+	}
 
 	for (const art of job.artifacts) {
 		const s = art.summary;
@@ -436,10 +442,30 @@ export function createProgressReporter(onUpdate: PortableToolUpdateCallback<Gene
 	};
 }
 
+/** Vertical stack: the job card, then the inline host image. */
+function stackComponents(parts: readonly ComponentLike[]): ComponentLike {
+	return {
+		render: (width: number): string[] => parts.flatMap(p => p.render(width)),
+		invalidate: (): void => {
+			for (const p of parts) {
+				p.invalidate();
+			}
+		},
+	};
+}
+
+function firstImage(result: PortableToolResult<GenerateDetails>): ImageBytes | undefined {
+	for (const item of result.content) {
+		if (item.type === "image") {
+			return { base64: item.data, mimeType: item.mimeType };
+		}
+	}
+	return undefined;
+}
+
 export function createPortableJobRenderers<P extends Record<string, unknown>>(
 	toolName: string,
-	ticker: SharedTicker,
-	stats: DurationStatsStore,
+	deps: ToolRuntimeDeps,
 ): {
 	readonly renderCall: (args: P, theme: PortableTheme) => ComponentLike;
 	readonly renderResult: (
@@ -489,17 +515,27 @@ export function createPortableJobRenderers<P extends Record<string, unknown>>(
 				});
 				return new MemoizedComponent(vm, renderCallCard, theme);
 			}
-			const tauMs = stats.getTauMs(state.providerId, state.modelId, state.producedSize);
+			const tauMs = deps.stats.getTauMs(state.providerId, state.modelId, state.producedSize);
 			const vm = buildJobCardVM({
 				toolName,
 				state,
 				nowMs: state.finishedAt ?? Date.now(),
-				spinnerTick: ticker.currentTick,
+				spinnerTick: deps.ticker.currentTick,
 				tauMs,
 				expanded: opts.expanded,
 				noColor,
 			});
-			return new MemoizedComponent(vm, renderJobCard, theme);
+			const card = new MemoizedComponent(vm, renderJobCard, theme);
+			const image = opts.isPartial ? undefined : firstImage(result);
+			const previewOpts = deps.previewOptions();
+			if (image === undefined || previewOpts === undefined) {
+				return card;
+			}
+			const filename = result.details?.artifacts[0]?.relativePath;
+			return stackComponents([
+				card,
+				deps.imageComponent(image, theme, { ...previewOpts, ...(filename !== undefined ? { filename } : {}) }),
+			]);
 		},
 	};
 }
@@ -508,4 +544,8 @@ export interface ToolRuntimeDeps {
 	readonly getPipelineDeps: (hostCtx: PortableCtx) => PipelineDeps;
 	readonly ticker: SharedTicker;
 	readonly stats: DurationStatsStore;
+	/** Host TUI `Image` component (text fallback when the host has none). */
+	readonly imageComponent: ImageComponentFactory;
+	/** Inline preview size from live config; `undefined` when `ui.inlinePreview` is off. */
+	readonly previewOptions: () => ImageRenderOpts | undefined;
 }

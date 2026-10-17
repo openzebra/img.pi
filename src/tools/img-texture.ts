@@ -19,16 +19,13 @@ export const IMG_TEXTURE_DESCRIPTION =
 	"(2) Metal texture: {material:'corroded riveted iron plate', maps:['albedo','normal','roughness','metallic','orm'], orm_pack:true}.";
 
 export function createImgTextureTool(deps: ToolRuntimeDeps): PortableTool<ImgTextureParams, GenerateDetails> {
-	const renderers = createPortableJobRenderers<ImgTextureParams & Record<string, unknown>>(
-		"img_texture",
-		deps.ticker,
-		deps.stats,
-	);
+	const renderers = createPortableJobRenderers<ImgTextureParams & Record<string, unknown>>("img_texture", deps);
 
 	return {
 		name: "img_texture",
 		label: "Generate PBR Texture",
 		description: IMG_TEXTURE_DESCRIPTION,
+		approval: "write",
 		parameters: IMG_TEXTURE_SCHEMA.jsonSchema,
 		async execute(
 			_toolCallId: string,

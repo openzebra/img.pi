@@ -33,6 +33,7 @@ export function createImgDescribeJobTool(
 		name: "img_describe_job",
 		label: "Describe Image Job",
 		description: IMG_DESCRIBE_JOB_DESCRIPTION,
+		approval: "read",
 		parameters: IMG_DESCRIBE_JOB_SCHEMA.jsonSchema,
 		async execute(
 			_toolCallId: string,

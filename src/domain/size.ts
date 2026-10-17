@@ -84,6 +84,8 @@ export interface SizeRequest {
 	readonly height?: number;
 	readonly aspectRatio?: string;
 	readonly resolution?: ResolutionTier;
+	/** Provider-native size token (e.g. `1024x1536`, `2K`), passed to the host verbatim. */
+	readonly imageSize?: string;
 }
 
 export interface SnapResult {

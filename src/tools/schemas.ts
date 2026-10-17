@@ -164,7 +164,8 @@ export const MODEL_FIELDS = {
 	model: defineField<string>({
 		jsonSchema: {
 			type: "string",
-			description: "Model ID ('openai/gpt-image-1', 'fal/flux-pro-v1.1') or alias ('fast', 'best', 'tex').",
+			description:
+				"Optional model id from img_list_models (e.g. 'google/<model>'). Omit to use the session default.",
 		},
 		arkDef: "string",
 	}),
@@ -224,6 +225,14 @@ export const SIZE_FIELDS = {
 		jsonSchema: {
 			type: "string",
 			description: "Aspect ratio 'W:H' (default '1:1') when width/height are omitted.",
+		},
+		arkDef: "string",
+	}),
+	image_size: defineField<string>({
+		jsonSchema: {
+			type: "string",
+			description:
+				"Provider-native size token passed to the model verbatim (e.g. '1024x1536' or '2K'). Usually omit.",
 		},
 		arkDef: "string",
 	}),
@@ -319,7 +328,7 @@ export const OUTPUT_FIELDS = {
 	output_dir: defineField<string>({
 		jsonSchema: {
 			type: "string",
-			description: "Output directory relative to cwd (default './generated/images').",
+			description: "Output directory relative to cwd (default '.pi/img/images').",
 		},
 		arkDef: "string",
 	}),
@@ -714,33 +723,17 @@ export const IMG_LIST_MODELS_FIELDS = {
 	provider: defineField<string>({
 		jsonSchema: {
 			type: "string",
-			description:
-				"Optional provider filter ('openai', 'google', 'fal', 'replicate', 'stability', 'comfyui', 'a1111', 'mock').",
+			description: "Optional provider id filter, as shown in the list (e.g. 'google').",
 		},
 		arkDef: "string",
 	}),
 	capability: defineField<Capability>({
 		jsonSchema: {
 			type: "string",
-			enum: [
-				"txt2img",
-				"img2img",
-				"inpaint",
-				"multi_ref",
-				"seed",
-				"negative_prompt",
-				"transparent_bg",
-				"arbitrary_size",
-				"steps",
-				"guidance",
-				"partial_previews",
-				"native_tiling",
-				"count",
-			],
-			description: "Optional capability filter.",
+			enum: ["txt2img", "img2img", "multi_ref"],
+			description: "Optional filter: 'img2img' lists models that can edit images.",
 		},
-		arkDef:
-			"'txt2img' | 'img2img' | 'inpaint' | 'multi_ref' | 'seed' | 'negative_prompt' | 'transparent_bg' | 'arbitrary_size' | 'steps' | 'guidance' | 'partial_previews' | 'native_tiling' | 'count'",
+		arkDef: "'txt2img' | 'img2img' | 'multi_ref'",
 	}),
 } as const;
 

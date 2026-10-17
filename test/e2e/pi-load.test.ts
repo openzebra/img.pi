@@ -4,12 +4,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ComponentLike } from "../../src/host/port.js";
 import imgPiExtension from "../../src/index.js";
+import { STUB_PNG_B64 } from "../fixtures/omp-ai-stub.js";
 
 interface PiRegisteredTool {
 	readonly name: string;
 	readonly label: string;
 	readonly description: string;
 	readonly parameters: Readonly<Record<string, unknown>>;
+	readonly promptSnippet?: string;
+	readonly promptGuidelines?: readonly string[];
 	readonly execute: (
 		id: string,
 		params: unknown,
@@ -38,91 +41,72 @@ describe("e2e: pi host harness", () => {
 		}
 	});
 
-	test("loads on pi ExtensionAPI, normalizes pi renderCall/renderResult signatures, and executes tools", async () => {
+	test("loads on pi: tools listed in the prompt, host image models, pi renderer signatures", async () => {
 		const tools = new Map<string, PiRegisteredTool>();
-		const commands = new Map<string, unknown>();
+		const commands: string[] = [];
 		const listeners = new Map<string, ((...args: readonly unknown[]) => unknown)[]>();
-
-		// pi exposes typebox without arktype/zod/logger
 		const piApi = {
 			typebox: {},
-			registerTool(def: PiRegisteredTool): void {
-				tools.set(def.name, def);
-			},
-			registerCommand(name: string, spec: unknown): void {
-				commands.set(name, spec);
-			},
-			registerShortcut(): void {
-				// no-op
-			},
-			registerFlag(): void {
-				// no-op
-			},
-			on(event: string, handler: (...args: readonly unknown[]) => unknown): void {
-				const list = listeners.get(event) ?? [];
-				list.push(handler);
-				listeners.set(event, list);
+			registerTool: (def: PiRegisteredTool) => tools.set(def.name, def),
+			registerCommand: (name: string) => commands.push(name),
+			registerShortcut: (key: string) => commands.push(key),
+			registerFlag: () => undefined,
+			on: (event: string, handler: (...args: readonly unknown[]) => unknown) => {
+				listeners.set(event, [...(listeners.get(event) ?? []), handler]);
 			},
 		};
 
 		const wired = imgPiExtension(piApi);
-		expect(wired).toBeDefined();
 		expect(wired?.host.kind).toBe("pi");
-		expect(wired?.host.projectDirName).toBe(".pi");
-
 		expect(tools.size).toBe(6);
-		expect(commands.size).toBe(5);
+		expect(commands).toEqual([]);
+		expect(tools.get("img_generate")?.promptSnippet).toContain("img_generate");
+		expect(tools.get("img_generate")?.promptGuidelines?.length).toBeGreaterThan(0);
+		expect(tools.get("img_edit")?.promptSnippet).toContain("img_edit");
 
+		const flux = { id: "flux", name: "FLUX", provider: "openrouter", input: ["text"] };
+		const sentContexts: unknown[] = [];
 		const piCtx = {
 			cwd: tmpDir,
 			mode: "print",
 			hasUI: false,
-			ui: {
-				notify: (_m: string) => undefined,
-				setStatus: () => undefined,
-				setWidget: () => undefined,
+			ui: { notify: () => undefined, setStatus: () => undefined, setWidget: () => undefined },
+			modelRegistry: {
+				getAvailableOfType: (type: string) => Promise.resolve(type === "image" ? [flux] : []),
+				getProviderDisplayName: () => "OpenRouter",
+				generateImages: (_model: unknown, context: unknown) => {
+					sentContexts.push(context);
+					return Promise.resolve({
+						stopReason: "stop",
+						model: "flux",
+						output: [{ type: "image", data: STUB_PNG_B64, mimeType: "image/png" }],
+					});
+				},
 			},
 		};
-
 		for (const fn of listeners.get("session_start") ?? []) {
 			await fn({}, piCtx);
 		}
 
-		// Verify pi's renderCall(args, theme, context) signature (theme is 2nd arg!)
+		// pi renderCall(args, theme, context): theme is the 2nd argument.
 		const genTool = tools.get("img_generate");
-		const mockTheme = {
-			fg: (_c: string, t: string) => `<${t}>`,
-			bold: (t: string) => `[${t}]`,
-		};
-		const callCard = genTool?.renderCall?.({ prompt: "pi signature check" }, mockTheme, { toolCallId: "pi-1" });
-		const callRendered = callCard?.render(80).join("\n") ?? "";
+		const mockTheme = { fg: (_c: string, t: string) => `<${t}>`, bold: (t: string) => `[${t}]` };
+		const callRendered = genTool?.renderCall?.({ prompt: "pi signature check" }, mockTheme, {}).render(80).join("\n");
 		expect(callRendered).toContain("pi signature check");
 		expect(callRendered).toContain("[img_generate]");
 
-		const res = await genTool?.execute(
-			"pi-call-1",
-			{
-				prompt: "pi generated sphere",
-				model: "mock/solid",
-				width: 128,
-				height: 128,
-			},
-			undefined,
-			undefined,
-			piCtx,
-		);
+		const res = await genTool?.execute("pi-cat", { prompt: "a sleepy cat" }, undefined, undefined, piCtx);
 		expect(res?.isError).toBe(false);
+		expect(JSON.stringify(sentContexts[0])).toContain("a sleepy cat");
+		expect(JSON.stringify(sentContexts[0])).not.toContain('"type":"image"');
+		const files = await fs.readdir(path.join(tmpDir, ".pi/img/images"));
+		expect(files.some(f => f.endsWith(".png"))).toBe(true);
 
-		// Verify pi's renderResult(result, options, theme, context) signature
-		const resCard = genTool?.renderResult?.(res, { expanded: false, isPartial: false }, mockTheme, {
-			args: { prompt: "pi generated sphere" },
+		// pi renderResult(result, options, theme, context)
+		const resCard = genTool?.renderResult?.(res, { expanded: true, isPartial: false }, mockTheme, {
+			args: { prompt: "a sleepy cat" },
 		});
-		expect(resCard?.render(80).join("\n")).toContain("solid · 128×128");
-
-		const expandedCard = genTool?.renderResult?.(res, { expanded: true, isPartial: false }, mockTheme, {
-			args: { prompt: "pi generated sphere" },
-		});
-		expect(expandedCard?.render(80).join("\n")).toContain("mock/solid");
+		expect(resCard?.render(80).join("\n")).toContain("openrouter/flux");
 
 		for (const fn of listeners.get("session_shutdown") ?? []) {
 			await fn();

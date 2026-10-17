@@ -14,21 +14,32 @@ import type { ImgGenerateParams } from "./schemas.js";
 import { IMG_GENERATE_SCHEMA } from "./schemas.js";
 
 export const IMG_GENERATE_DESCRIPTION =
-	"Generate images from a text prompt with optional reference images, exact pixel sizing, post-processing, and reproducible sidecars. " +
-	"Examples: (1) Photo: {prompt:'brushed steel espresso machine on marble counter', style:'photo', width:1536, height:1024} " +
-	"(2) Texture: {prompt:'weathered oak planks', style:'pbr-texture', width:1024, height:1024}.";
+	"Create a new image from a text description. Call this whenever the user asks you to draw, generate, create, " +
+	"render, or illustrate a picture, photo, icon, logo, sprite, or artwork; the user never needs a command. " +
+	"Write a detailed visual prompt (subject, setting, composition, lighting, style). The model defaults to the best " +
+	"one connected in this session; pass `model` only if the user names one (see img_list_models). " +
+	"The image is saved under .pi/img/images and its path is returned. " +
+	"Examples: {prompt:'a fluffy ginger cat curled on a sunny windowsill, soft morning light, photo'} · " +
+	"{prompt:'flat vector app icon of a paper plane', aspect_ratio:'1:1', style:'ui-icon'}.";
+
+const IMG_GENERATE_SNIPPET = "img_generate: create an image from a text prompt (saved under .pi/img/images)";
+
+const IMG_GENERATE_GUIDELINES: readonly string[] = Object.freeze([
+	"When the user asks for a picture, drawing, illustration, photo, icon, or artwork, call img_generate yourself with a detailed prompt.",
+	"To change an existing image (including one just generated, via '@last'), call img_edit instead.",
+]);
 
 export function createImgGenerateTool(deps: ToolRuntimeDeps): PortableTool<ImgGenerateParams, GenerateDetails> {
-	const renderers = createPortableJobRenderers<ImgGenerateParams & Record<string, unknown>>(
-		"img_generate",
-		deps.ticker,
-		deps.stats,
-	);
+	const renderers = createPortableJobRenderers<ImgGenerateParams & Record<string, unknown>>("img_generate", deps);
 
 	return {
 		name: "img_generate",
 		label: "Generate Image",
 		description: IMG_GENERATE_DESCRIPTION,
+		essential: true,
+		approval: "write",
+		promptSnippet: IMG_GENERATE_SNIPPET,
+		promptGuidelines: IMG_GENERATE_GUIDELINES,
 		parameters: IMG_GENERATE_SCHEMA.jsonSchema,
 		async execute(
 			_toolCallId: string,

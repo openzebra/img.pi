@@ -3,13 +3,15 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ComponentLike } from "../../src/host/port.js";
-import imgPiExtension from "../../src/index.js";
+import { generateCalls, installOmpAiStub } from "../fixtures/omp-ai-stub.js";
+
+installOmpAiStub();
+const { default: imgPiExtension } = await import("../../src/index.js");
 
 interface RegisteredTool {
 	readonly name: string;
-	readonly label: string;
-	readonly description: string;
-	readonly parameters: Readonly<Record<string, unknown>>;
+	readonly loadMode?: string;
+	readonly approval?: string;
 	readonly execute: (
 		id: string,
 		params: unknown,
@@ -18,11 +20,61 @@ interface RegisteredTool {
 		ctx: unknown,
 	) => Promise<{
 		readonly content: readonly { readonly type: string; readonly text?: string }[];
-		readonly details?: unknown;
+		readonly details?: { readonly model?: string; readonly artifacts?: readonly { readonly path: string }[] };
 		readonly isError?: boolean;
 	}>;
 	readonly renderCall?: (args: unknown, options: unknown, theme: unknown) => ComponentLike;
 	readonly renderResult?: (result: unknown, options: unknown, theme: unknown, args?: unknown) => ComponentLike;
+}
+
+const GOOGLE_IMAGE = {
+	id: "gemini-image",
+	name: "Gemini Image",
+	provider: "google",
+	api: "google-generative-ai",
+	kind: "image",
+	input: ["text", "image"],
+};
+const GOOGLE_CHAT = { id: "gemini-pro", name: "Gemini Pro", provider: "google", api: "google-generative-ai" };
+
+/** A session whose only connection is Google: no OpenAI anywhere. */
+const googleOnlyRegistry = {
+	getAvailable: (kind?: string): unknown[] => (kind === "all" ? [GOOGLE_CHAT, GOOGLE_IMAGE] : [GOOGLE_CHAT]),
+	getApiKey: () => Promise.resolve("google-key"),
+	resolver: () => "google-resolver",
+	resolveModelHeaders: () => Promise.resolve(undefined),
+};
+
+const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+
+function createOmpApi(): {
+	readonly api: Record<string, unknown>;
+	readonly tools: Map<string, RegisteredTool>;
+	readonly commands: string[];
+	readonly listeners: Map<string, ((...args: readonly unknown[]) => unknown)[]>;
+	readonly activeTools: { value: string[] };
+} {
+	const tools = new Map<string, RegisteredTool>();
+	const commands: string[] = [];
+	const listeners = new Map<string, ((...args: readonly unknown[]) => unknown)[]>();
+	const activeTools = { value: ["read", "generate_image", "bash"] };
+	const api = {
+		arktype: {},
+		logger: { error: () => undefined },
+		registerTool: (def: RegisteredTool) => tools.set(def.name, def),
+		registerCommand: (name: string) => commands.push(name),
+		registerShortcut: (key: string) => commands.push(key),
+		registerFlag: () => undefined,
+		getFlag: () => undefined,
+		getActiveTools: () => activeTools.value,
+		setActiveTools: (next: string[]) => {
+			activeTools.value = next;
+		},
+		on: (event: string, handler: (...args: readonly unknown[]) => unknown) => {
+			listeners.set(event, [...(listeners.get(event) ?? []), handler]);
+		},
+	};
+	return { api, tools, commands, listeners, activeTools };
 }
 
 describe("e2e: omp host harness", () => {
@@ -38,137 +90,61 @@ describe("e2e: omp host harness", () => {
 		}
 	});
 
-	test("loads on omp ExtensionAPI, registers tools/commands/flags/shortcuts, runs jobs, and shuts down cleanly", async () => {
-		const tools = new Map<string, RegisteredTool>();
-		const commands = new Map<
-			string,
-			{ readonly description: string; readonly handler: (args: string, ctx: unknown) => Promise<void> }
-		>();
-		const shortcuts = new Map<
-			string,
-			{ readonly description: string; readonly handler: (ctx: unknown) => Promise<void> }
-		>();
-		const flags = new Map<string, unknown>();
-		const listeners = new Map<string, ((...args: readonly unknown[]) => unknown)[]>();
-
-		const ompApi = {
-			arktype: {},
-			zod: {},
-			logger: {
-				error: (_msg: string, _err?: unknown) => undefined,
-			},
-			registerTool(def: RegisteredTool): void {
-				tools.set(def.name, def);
-			},
-			registerCommand(
-				name: string,
-				spec: { readonly description: string; readonly handler: (args: string, ctx: unknown) => Promise<void> },
-			): void {
-				commands.set(name, spec);
-			},
-			registerShortcut(
-				key: string,
-				spec: { readonly description: string; readonly handler: (ctx: unknown) => Promise<void> },
-			): void {
-				shortcuts.set(key, spec);
-			},
-			registerFlag(name: string, spec: unknown): void {
-				flags.set(name, spec);
-			},
-			getFlag(_name: string): string | undefined {
-				return undefined;
-			},
-			on(event: string, handler: (...args: readonly unknown[]) => unknown): void {
-				const list = listeners.get(event) ?? [];
-				list.push(handler);
-				listeners.set(event, list);
-			},
-		};
-
-		const wired = imgPiExtension(ompApi);
-		expect(wired).toBeDefined();
+	test("'draw me a cat': agent-visible tools, host model, .pi/img output, inline host image", async () => {
+		const { api, tools, commands, listeners, activeTools } = createOmpApi();
+		const wired = imgPiExtension(api);
 		expect(wired?.host.kind).toBe("omp");
 
-		// Verify all 6 tools
-		expect(tools.has("img_generate")).toBe(true);
-		expect(tools.has("img_edit")).toBe(true);
-		expect(tools.has("img_texture")).toBe(true);
-		expect(tools.has("img_variations")).toBe(true);
-		expect(tools.has("img_list_models")).toBe(true);
-		expect(tools.has("img_describe_job")).toBe(true);
-
-		// Verify all 5 commands
-		expect(commands.has("img")).toBe(true);
-		expect(commands.has("img:settings")).toBe(true);
-		expect(commands.has("img:gallery")).toBe(true);
-		expect(commands.has("img:queue")).toBe(true);
-		expect(commands.has("img:model")).toBe(true);
-
-		// Verify shortcut and flag
-		expect(shortcuts.has("ctrl+alt+i")).toBe(true);
-		expect(flags.has("img-model")).toBe(true);
+		// The agent sees the image tools at top level; nothing for the user to invoke.
+		expect(tools.get("img_generate")).toMatchObject({ loadMode: "essential", approval: "write" });
+		expect(tools.get("img_edit")).toMatchObject({ loadMode: "essential", approval: "write" });
+		expect(tools.get("img_list_models")?.loadMode).toBeUndefined();
+		expect(commands).toEqual([]);
 
 		const statusUpdates: (string | undefined)[] = [];
-		const ompCtx = {
+		const ctx = {
 			cwd: tmpDir,
 			mode: "tui",
 			hasUI: true,
+			sessionId: "e2e-session",
+			model: { provider: "google", id: "gemini-pro" },
+			modelRegistry: googleOnlyRegistry,
 			ui: {
-				notify: (_m: string) => undefined,
-				setStatus: (_k: string, text: string | undefined) => {
-					statusUpdates.push(text);
-				},
-				setWidget: (_k: string, _lines: readonly string[] | undefined) => undefined,
-				confirm: () => Promise.resolve(false),
-				select: () => Promise.resolve("mock/solid"),
+				notify: () => undefined,
+				setStatus: (_k: string, text: string | undefined) => statusUpdates.push(text),
+				setWidget: () => undefined,
 			},
 		};
-
-		// Trigger session_start
 		for (const fn of listeners.get("session_start") ?? []) {
-			await fn({}, ompCtx);
+			await fn({}, ctx);
 		}
-		expect(statusUpdates.length).toBeGreaterThan(0);
+		await Bun.sleep(0);
+		expect(activeTools.value).toEqual(["read", "bash"]);
+		expect(statusUpdates.at(-1)).toBe("img:Gemini Image");
 
-		// Test omp 3-arg renderCall and 4-arg renderResult signature
+		generateCalls.length = 0;
 		const genTool = tools.get("img_generate");
-		const mockTheme = {
-			fg: (_c: string, t: string) => t,
-			bold: (t: string) => `**${t}**`,
-		};
-		const callCard = genTool?.renderCall?.(
-			{ prompt: "omp render test", width: 256, height: 256 },
-			{ expanded: false, isPartial: false },
-			mockTheme,
-		);
-		expect(callCard?.render(80).join("\n")).toContain("omp render test");
+		const res = await genTool?.execute("omp-cat", { prompt: "a fluffy ginger cat" }, undefined, undefined, ctx);
+		expect(res?.isError).toBe(false);
+		expect(res?.details?.model).toBe("google/gemini-image");
+		expect(generateCalls[0]?.model["id"]).toBe("gemini-image");
+		expect(generateCalls[0]?.options["apiKey"]).toBe("google-resolver");
 
-		const genResult = await genTool?.execute(
-			"omp-call-1",
-			{
-				prompt: "omp e2e sample",
-				model: "mock/solid",
-				width: 128,
-				height: 128,
-				seed: 7,
-			},
-			undefined,
-			undefined,
-			ompCtx,
-		);
-		expect(genResult?.isError).toBe(false);
+		const saved = res?.details?.artifacts?.[0]?.path ?? "";
+		expect(path.relative(await fs.realpath(tmpDir), saved).startsWith(path.join(".pi", "img", "images"))).toBe(true);
+		expect((await fs.stat(saved)).size).toBeGreaterThan(0);
+		expect((await fs.readFile(path.join(tmpDir, ".pi/img/manifest.jsonl"), "utf8")).length).toBeGreaterThan(0);
 
-		const resCard = genTool?.renderResult?.(genResult, { expanded: true, isPartial: false }, mockTheme, {
-			prompt: "omp e2e sample",
+		const card = genTool?.renderResult?.(res, { expanded: false, isPartial: false }, theme, {
+			prompt: "a fluffy ginger cat",
 		});
-		expect(resCard?.render(80).join("\n")).toContain("mock/solid");
+		expect(card?.render(80).at(-1)).toBe("[[host image]]");
 
-		// Test /img:model command handler
-		const modelCmd = commands.get("img:model");
-		await modelCmd?.handler("mock/solid", ompCtx);
-		expect(wired?.configStore.getEffective().defaults.model).toBe("mock/solid");
+		const listRes = await tools.get("img_list_models")?.execute("omp-list", {}, undefined, undefined, ctx);
+		const listText = listRes?.content[0]?.text ?? "";
+		expect(listText).toContain("google/gemini-image");
+		expect(listText).not.toContain("openai");
 
-		// Trigger session_shutdown
 		for (const fn of listeners.get("session_shutdown") ?? []) {
 			await fn();
 		}
@@ -176,27 +152,8 @@ describe("e2e: omp host harness", () => {
 	});
 
 	test("event-loop responsiveness: p99 delay stays < 20 ms during a 32-job batch", async () => {
-		const tools = new Map<string, RegisteredTool>();
-		const ompApi = {
-			arktype: {},
-			registerTool(def: RegisteredTool): void {
-				tools.set(def.name, def);
-			},
-			registerCommand(): void {
-				// no-op
-			},
-			registerShortcut(): void {
-				// no-op
-			},
-			registerFlag(): void {
-				// no-op
-			},
-			on(): void {
-				// no-op
-			},
-		};
-
-		const wired = imgPiExtension(ompApi);
+		const { api, tools } = createOmpApi();
+		const wired = imgPiExtension(api);
 		const varTool = tools.get("img_variations");
 		expect(varTool).toBeDefined();
 
@@ -205,29 +162,21 @@ describe("e2e: omp host harness", () => {
 		let expectedNext = performance.now() + intervalMs;
 		const timer = setInterval(() => {
 			const now = performance.now();
-			const drift = Math.max(0, now - expectedNext);
-			delaysMs.push(drift);
+			delaysMs.push(Math.max(0, now - expectedNext));
 			expectedNext = now + intervalMs;
 		}, intervalMs);
 
 		try {
-			const seeds = Array.from({ length: 32 }, (_, i) => i + 1);
 			const res = await varTool?.execute(
 				"perf-32",
 				{
-					base: {
-						prompt: "perf batch item",
-						model: "mock/solid",
-						width: 128,
-						height: 128,
-						return_image: "none",
-					},
-					vary: { seeds },
+					base: { prompt: "perf batch item", width: 128, height: 128, return_image: "none" },
+					vary: { seeds: Array.from({ length: 32 }, (_, i) => i + 1) },
 					mode: "cartesian",
 				},
 				undefined,
 				undefined,
-				{ cwd: tmpDir, mode: "print", hasUI: false, ui: {} },
+				{ cwd: tmpDir, mode: "print", hasUI: false, ui: {}, modelRegistry: googleOnlyRegistry },
 			);
 			expect(res?.isError).toBe(false);
 		} finally {
@@ -235,11 +184,8 @@ describe("e2e: omp host harness", () => {
 			await wired?.shutdown();
 		}
 
-		if (delaysMs.length > 0) {
-			const sorted = [...delaysMs].sort((a, b) => a - b);
-			const p99Idx = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.99));
-			const p99 = sorted[p99Idx] ?? 0;
-			expect(p99).toBeLessThan(20);
-		}
+		const sorted = [...delaysMs].sort((a, b) => a - b);
+		const p99 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.99))] ?? 0;
+		expect(p99).toBeLessThan(20);
 	});
 });

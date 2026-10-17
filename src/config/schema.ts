@@ -1,6 +1,7 @@
 import { type } from "arktype";
 import { configInvalid, type ImgError } from "../core/errors";
 import { deepFreeze } from "../core/freeze";
+import { ARTIFACT_PATHS } from "../domain/artifact-paths";
 import { err, ok, type Result } from "../core/result";
 import {
 	type ConflictPolicy,
@@ -17,15 +18,6 @@ import {
 	type TextureResolution,
 	type TilingMethod,
 } from "../domain/texture";
-
-export interface ProviderConfigEntry {
-	readonly enabled: boolean;
-	readonly apiKeyEnv?: string;
-	readonly apiKeyCommand?: string;
-	readonly baseUrl?: string;
-	readonly workflowsDir?: string;
-	readonly maxConcurrent?: number;
-}
 
 export interface StylePreset {
 	readonly style: string;
@@ -53,14 +45,6 @@ export interface ImgConfig {
 		readonly timeoutMs: number;
 	};
 	readonly aliases: Readonly<Record<string, string>>;
-	readonly providers: {
-		readonly host: ProviderConfigEntry;
-		readonly fal: ProviderConfigEntry;
-		readonly replicate: ProviderConfigEntry;
-		readonly stability: ProviderConfigEntry;
-		readonly comfyui: ProviderConfigEntry;
-		readonly a1111: ProviderConfigEntry;
-	};
 	readonly output: {
 		readonly dir: string;
 		readonly textureDir: string;
@@ -84,7 +68,6 @@ export interface ImgConfig {
 	};
 	readonly limits: {
 		readonly maxBatch: number;
-		readonly maxCostPerCallUsd: number;
 		readonly maxPixels: number;
 	};
 	readonly ui: {
@@ -120,7 +103,6 @@ export interface PartialConfig {
 		readonly timeoutMs?: number;
 	};
 	readonly aliases?: Readonly<Record<string, string>>;
-	readonly providers?: Readonly<Record<string, Partial<ProviderConfigEntry>>>;
 	readonly output?: {
 		readonly dir?: string;
 		readonly textureDir?: string;
@@ -144,7 +126,6 @@ export interface PartialConfig {
 	};
 	readonly limits?: {
 		readonly maxBatch?: number;
-		readonly maxCostPerCallUsd?: number;
 		readonly maxPixels?: number;
 	};
 	readonly ui?: {
@@ -205,7 +186,7 @@ export const DEFAULT_PRESETS: Readonly<Record<string, StylePreset>> = deepFreeze
 export const DEFAULT_CONFIG: ImgConfig = deepFreeze({
 	version: 1,
 	defaults: {
-		model: "host:auto",
+		model: "auto",
 		size: { width: 1024, height: 1024 },
 		format: "png",
 		compression: 90,
@@ -213,37 +194,16 @@ export const DEFAULT_CONFIG: ImgConfig = deepFreeze({
 		returnImage: "thumbnail",
 		timeoutMs: 180000,
 	},
-	aliases: {
-		fast: "fal/flux-schnell",
-		best: "openai/gpt-image-1",
-		tex: "comfyui/sdxl-pbr",
-	},
-	providers: {
-		host: { enabled: true },
-		fal: { enabled: true, apiKeyEnv: "FAL_KEY", maxConcurrent: 4 },
-		replicate: { enabled: false, apiKeyEnv: "REPLICATE_API_TOKEN", maxConcurrent: 2 },
-		stability: { enabled: false, apiKeyEnv: "STABILITY_API_KEY", maxConcurrent: 2 },
-		comfyui: {
-			enabled: false,
-			baseUrl: "http://127.0.0.1:8188",
-			workflowsDir: "~/.omp/agent/img-pi/workflows",
-			maxConcurrent: 1,
-		},
-		a1111: {
-			enabled: false,
-			baseUrl: "http://127.0.0.1:7860",
-			maxConcurrent: 1,
-		},
-	},
+	aliases: {},
 	output: {
-		dir: "generated/images",
-		textureDir: "generated/textures",
+		dir: ARTIFACT_PATHS.images,
+		textureDir: ARTIFACT_PATHS.textures,
 		filename: "{date}_{slug}_{index}",
 		textureFilename: "{slug}/{slug}_{map}",
 		onConflict: "suffix",
 		allowOutsideCwd: false,
 		sidecar: true,
-		manifest: ".img-pi/manifest.jsonl",
+		manifest: ARTIFACT_PATHS.manifest,
 		embedMetadata: true,
 	},
 	textures: {
@@ -258,7 +218,6 @@ export const DEFAULT_CONFIG: ImgConfig = deepFreeze({
 	},
 	limits: {
 		maxBatch: 32,
-		maxCostPerCallUsd: 2.0,
 		maxPixels: 16777216,
 	},
 	ui: {
@@ -275,17 +234,8 @@ export const DEFAULT_CONFIG: ImgConfig = deepFreeze({
 		blender: {},
 	},
 	compat: {
-		hideBuiltin: false,
+		hideBuiltin: true,
 	},
-});
-
-const providerEntrySchema = type({
-	"enabled?": "boolean",
-	"apiKeyEnv?": "string",
-	"apiKeyCommand?": "string",
-	"baseUrl?": "string",
-	"workflowsDir?": "string",
-	"maxConcurrent?": "number.integer >= 1",
 });
 
 const partialConfigArkSchema = type({
@@ -304,14 +254,6 @@ const partialConfigArkSchema = type({
 		"timeoutMs?": "5000 <= number.integer <= 900000",
 	},
 	"aliases?": "Record<string, string>",
-	"providers?": {
-		"host?": providerEntrySchema,
-		"fal?": providerEntrySchema,
-		"replicate?": providerEntrySchema,
-		"stability?": providerEntrySchema,
-		"comfyui?": providerEntrySchema,
-		"a1111?": providerEntrySchema,
-	},
 	"output?": {
 		"dir?": "string",
 		"textureDir?": "string",
@@ -335,7 +277,6 @@ const partialConfigArkSchema = type({
 	},
 	"limits?": {
 		"maxBatch?": "1 <= number.integer <= 128",
-		"maxCostPerCallUsd?": "0 <= number <= 1000",
 		"maxPixels?": "4096 <= number.integer <= 67108864",
 	},
 	"ui?": {
@@ -374,7 +315,6 @@ const ALLOWED_TOP_KEYS: ReadonlySet<string> = new Set([
 	"version",
 	"defaults",
 	"aliases",
-	"providers",
 	"output",
 	"textures",
 	"queue",

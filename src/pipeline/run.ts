@@ -16,15 +16,7 @@ import type { HostPort, PortableCtx } from "../host/port.js";
 import type { DurationStatsStore } from "../jobs/progress.js";
 import type { JobQueue } from "../jobs/queue.js";
 import type { HttpClient } from "../providers/http.js";
-import type {
-	PreparedReference,
-	ProviderCtx,
-	ProviderIO,
-	ProviderModel,
-	RawImage,
-	ResolvedJob,
-} from "../providers/port.js";
-import type { SecretResolver } from "../providers/port.js";
+import type { PreparedReference, ProviderCtx, ProviderIO, RawImage, ResolvedJob } from "../providers/port.js";
 import type { ProviderRegistry } from "../providers/registry.js";
 import type { ManifestStore } from "../storage/manifest.js";
 import { expandFilenameTemplate, resolveSafeOutputPath } from "../storage/paths.js";
@@ -43,7 +35,6 @@ export interface PipelineDeps {
 	readonly queue: JobQueue;
 	readonly pool: WorkerPool;
 	readonly http: HttpClient;
-	readonly secrets: SecretResolver;
 	readonly manifest: ManifestStore;
 	readonly stats: DurationStatsStore;
 }
@@ -51,14 +42,12 @@ export interface PipelineDeps {
 export interface RunJobOptions {
 	readonly jobId?: string;
 	readonly signal?: AbortSignal;
-	readonly skipCostGuard?: boolean;
 	readonly onStateChange?: (state: JobState, ev: JobEvent) => void;
 }
 
 export interface ExecutedJobResult {
 	readonly job: JobState;
 	readonly dryRun: boolean;
-	readonly estimatedCostUsd: number;
 	readonly failedRequestPath?: string;
 	readonly textureExtra?: {
 		readonly seamScore?: number;
@@ -67,11 +56,6 @@ export interface ExecutedJobResult {
 		readonly previewThumbMimeType?: string;
 		readonly materialJsonPath?: string;
 	};
-}
-
-export function estimateJobCostUsd(model: ProviderModel, count: number): number {
-	const unit = model.costPerImageUsd ?? 0.04;
-	return Number((unit * count).toFixed(4));
 }
 
 export async function runGenerationJob(
@@ -83,8 +67,6 @@ export async function runGenerationJob(
 		host: deps.host,
 		hostCtx: deps.hostCtx,
 		config: deps.config,
-		http: deps.http,
-		secrets: deps.secrets,
 	};
 
 	const modelRes = await deps.registry.resolveModel(request.model, providerCtx);
@@ -105,13 +87,8 @@ export async function runGenerationJob(
 		warnings.push("guidance ignored (unsupported by model)");
 	}
 
-	if (request.references.length > 0) {
-		if (model.maxRefs === 0) {
-			return err(unsupportedFeature(model.id, "img2img"));
-		}
-		if (request.references.length > model.maxRefs) {
-			return err(unsupportedFeature(model.id, "multi_ref"));
-		}
+	if (request.references.length > 0 && !model.caps.has("multi_ref")) {
+		return err(unsupportedFeature(model.id, "multi_ref"));
 	}
 
 	if (request.kind === "edit" && request.edit !== undefined) {
@@ -152,17 +129,6 @@ export async function runGenerationJob(
 		);
 	}
 
-	// Cost estimate and guard
-	const estimatedCostUsd = estimateJobCostUsd(model, request.count);
-	if (opts.skipCostGuard !== true && estimatedCostUsd > deps.config.limits.maxCostPerCallUsd) {
-		return err(
-			configInvalid(
-				"limits.maxCostPerCallUsd",
-				`Estimated cost $${estimatedCostUsd.toFixed(2)} exceeds limits.maxCostPerCallUsd ($${deps.config.limits.maxCostPerCallUsd.toFixed(2)})`,
-			),
-		);
-	}
-
 	const jobId = opts.jobId ?? newJobId();
 
 	// Dry run handling
@@ -178,16 +144,10 @@ export async function runGenerationJob(
 			createdAt: now,
 			warnings,
 		});
-		state = reduceJob(state, {
-			t: "usage",
-			usage: { images: request.count, costUsd: estimatedCostUsd },
-			at: now,
-		});
 		state = reduceJob(state, { t: "phase", phase: "done", at: now, detail: "dry run" });
 		return ok({
 			job: state,
 			dryRun: true,
-			estimatedCostUsd,
 		});
 	}
 
@@ -300,7 +260,7 @@ export async function runGenerationJob(
 				}
 			}
 
-			// 2. Submit & Generate (splitting count > model.maxCount if needed)
+			// 2. Submit & Generate (one host call per image)
 			execCtx.emit({
 				t: "phase",
 				phase: "submitting",
@@ -316,7 +276,6 @@ export async function runGenerationJob(
 				detail: "generating…",
 			});
 
-			const maxPerCall = Math.max(1, model.maxCount);
 			const totalWanted = isTexture ? 1 : request.count;
 			const rawImages: RawImage[] = [];
 			let remaining = totalWanted;
@@ -325,8 +284,6 @@ export async function runGenerationJob(
 			const providerIO: ProviderIO = {
 				signal: execCtx.signal,
 				emit: execCtx.emit,
-				http: deps.http,
-				secrets: deps.secrets,
 				host: deps.host,
 				hostCtx: deps.hostCtx,
 				config: deps.config,
@@ -334,7 +291,6 @@ export async function runGenerationJob(
 			};
 
 			while (remaining > 0) {
-				const batchCount = Math.min(remaining, maxPerCall);
 				const batchSeed = request.seed + callIndex;
 				const resolvedJob: ResolvedJob = {
 					jobId,
@@ -344,13 +300,9 @@ export async function runGenerationJob(
 					...(expanded.negativePrompt !== undefined ? { negativePrompt: expanded.negativePrompt } : {}),
 					size: producedProviderSize,
 					requestedSize,
-					...(request.sizeRequest.aspectRatio !== undefined
-						? { aspectRatio: request.sizeRequest.aspectRatio }
-						: {}),
-					...(request.sizeRequest.resolution !== undefined
-						? { resolutionTier: request.sizeRequest.resolution }
-						: {}),
-					count: batchCount,
+					aspectRatio: snapRes.value.aspectRatio,
+					...(request.sizeRequest.imageSize !== undefined ? { imageSize: request.sizeRequest.imageSize } : {}),
+					count: 1,
 					seed: batchSeed,
 					...(request.steps !== undefined ? { steps: request.steps } : {}),
 					...(request.guidance !== undefined ? { guidance: request.guidance } : {}),
@@ -371,7 +323,7 @@ export async function runGenerationJob(
 				for (const img of genRes.value) {
 					rawImages.push(img);
 				}
-				remaining = remaining - batchCount;
+				remaining = remaining - 1;
 				callIndex++;
 			}
 
@@ -383,7 +335,11 @@ export async function runGenerationJob(
 			let totalInTokens = 0;
 			let totalOutTokens = 0;
 			let hasTokenUsage = false;
+			let reportedCostUsd: number | undefined;
 			for (const img of rawImages) {
+				if (img.usage?.costUsd !== undefined) {
+					reportedCostUsd = (reportedCostUsd ?? 0) + img.usage.costUsd;
+				}
 				if (img.usage?.inputTokens !== undefined) {
 					totalInTokens = totalInTokens + img.usage.inputTokens;
 					hasTokenUsage = true;
@@ -397,7 +353,7 @@ export async function runGenerationJob(
 				...(hasTokenUsage && totalInTokens > 0 ? { inputTokens: totalInTokens } : {}),
 				...(hasTokenUsage && totalOutTokens > 0 ? { outputTokens: totalOutTokens } : {}),
 				images: rawImages.length,
-				costUsd: estimateJobCostUsd(model, rawImages.length),
+				...(reportedCostUsd !== undefined ? { costUsd: reportedCostUsd } : {}),
 			};
 			execCtx.emit({ t: "usage", usage: aggUsage, at: Date.now() });
 
@@ -652,7 +608,6 @@ export async function runGenerationJob(
 	return ok({
 		job: jobResult.value,
 		dryRun: false,
-		estimatedCostUsd,
 		...(textureExtra !== undefined ? { textureExtra } : {}),
 	});
 }

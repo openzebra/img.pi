@@ -6,10 +6,19 @@ import { deepFreeze } from "../core/freeze.js";
 import { toSlug } from "../core/ids.js";
 import type { Result } from "../core/result.js";
 import { err, ok, tryAsync } from "../core/result.js";
+import { ARTIFACT_ROOT } from "../domain/artifact-paths.js";
 import type { ConflictPolicy, ImageFormat } from "../domain/output.js";
 import { validateTemplateTokens } from "../domain/output.js";
 
-const FORBIDDEN_SEGMENTS: ReadonlySet<string> = new Set([".git", "node_modules", ".omp", ".pi"]);
+/** Never written into, anywhere in the path. */
+const FORBIDDEN_SEGMENTS: ReadonlySet<string> = new Set([".git", "node_modules"]);
+
+/** Host config dirs: forbidden except for img.pi's own artifact root (`.pi/img`). */
+const HOST_DIR_SEGMENTS: ReadonlySet<string> = new Set([".omp", ".pi"]);
+
+function isInsideArtifactRoot(posixRel: string): boolean {
+	return posixRel === ARTIFACT_ROOT || posixRel.startsWith(`${ARTIFACT_ROOT}/`);
+}
 
 export const FORMAT_EXTENSIONS: Readonly<Record<ImageFormat, string>> = deepFreeze({
 	png: ".png",
@@ -169,11 +178,11 @@ export async function resolveSafeOutputPath(
 		return err(pathForbidden(candidateAbs, "outside_root"));
 	}
 
-	// Check forbidden directory segments (.git, node_modules, .omp, .pi)
 	const checkRel = isOutsideCwd ? realCandidate : relToCwd;
 	const segments = checkRel.split(path.sep);
+	const allowHostDir = !isOutsideCwd && isInsideArtifactRoot(segments.join("/"));
 	for (const seg of segments) {
-		if (FORBIDDEN_SEGMENTS.has(seg)) {
+		if (FORBIDDEN_SEGMENTS.has(seg) || (!allowHostDir && HOST_DIR_SEGMENTS.has(seg))) {
 			return err(pathForbidden(candidateAbs, "not_writable"));
 		}
 	}

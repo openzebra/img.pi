@@ -1,4 +1,8 @@
-declare module "@oh-my-pi/pi-ai/images" {
+// Minimal structural declarations for host modules imported at runtime by src/host/*.
+// Shapes mirror the host sources cited per item; keep them in sync when the host changes.
+
+// oh-my-pi/packages/ai/src/index.ts → images/index.ts, images/types.ts, auth-retry.ts
+declare module "@oh-my-pi/pi-ai" {
 	export interface ImageInput {
 		readonly data: string;
 		readonly mimeType: string;
@@ -16,136 +20,60 @@ declare module "@oh-my-pi/pi-ai/images" {
 		readonly size?: string;
 		readonly quality?: string;
 	}
-	export interface ImageGenerationUsage {
-		readonly input?: number;
-		readonly output?: number;
-		readonly totalTokens?: number;
-		readonly cost?: {
-			readonly total?: number;
-		};
-	}
 	export interface ImageGenerationResult {
 		readonly images: readonly GeneratedImage[];
 		readonly text?: string;
-		readonly usage?: ImageGenerationUsage;
+		readonly usage?: unknown;
 		readonly model?: string;
 	}
 	export interface ImageGenerationOptions {
-		readonly apiKey: string;
+		/** `ApiKey = string | ApiKeyResolver` (auth-retry.ts:78). */
+		readonly apiKey: unknown;
+		readonly fetch?: unknown;
 		readonly signal?: AbortSignal;
 		readonly sessionId?: string;
+		readonly carrier?: unknown;
 	}
 	export function generateImage(
 		model: unknown,
 		request: ImageGenerationRequest,
 		options: ImageGenerationOptions,
 	): Promise<ImageGenerationResult>;
+	export function isImageGenerationApi(api: string): boolean;
+	/** Keyless-provider credential marker (auth-retry.ts:81). */
+	export const NO_AUTH_SENTINEL: string;
 }
 
+// oh-my-pi/packages/tui/src/components/image.ts
 declare module "@oh-my-pi/pi-tui" {
-	export class ImageBudget {
-		public readonly maxBytes: number;
-		public constructor(maxBytes: number, requestRender: () => void);
-	}
 	export interface ImageTheme {
-		readonly fallbackColor?: (text: string) => string;
+		readonly fallbackColor: (text: string) => string;
 	}
 	export interface ImageOptions {
 		readonly maxWidthCells?: number;
 		readonly maxHeightCells?: number;
 		readonly filename?: string;
-		readonly sourcePath?: string;
-		readonly budget?: ImageBudget;
-	}
-	export interface ImageDimensions {
-		readonly widthPx: number;
-		readonly heightPx: number;
 	}
 	export class Image {
-		public constructor(
-			base64Data: string,
-			mimeType: string,
-			theme: ImageTheme,
-			options?: ImageOptions,
-			dimensions?: ImageDimensions,
-		);
+		public constructor(base64Data: string, mimeType: string, theme: ImageTheme, options?: ImageOptions);
 		public render(width: number): string[];
 		public invalidate(): void;
 	}
-	export function getImageDimensions(base64Data: string, mimeType: string): ImageDimensions | undefined;
-	export function imageFallback(mimeType: string, dimensions?: ImageDimensions, filename?: string): string;
-	export function getCapabilities(): { readonly images?: string | null };
 }
 
-declare module "@earendil-works/pi-ai" {
-	export type ImagesInputContent =
-		| { readonly type: "text"; readonly text: string }
-		| { readonly type: "image"; readonly data: string; readonly mimeType: string };
-	export interface ImagesContext {
-		readonly input: readonly ImagesInputContent[];
-	}
-	export type ImagesOutputContent =
-		| { readonly type: "image"; readonly data: string; readonly mimeType: string }
-		| { readonly type: "text"; readonly text: string };
-	export interface AssistantImages {
-		readonly api: string;
-		readonly provider: string;
-		readonly model: string;
-		readonly output: readonly ImagesOutputContent[];
-		readonly stopReason: "stop" | "error" | "aborted";
-		readonly errorMessage?: string;
-		readonly usage?: {
-			readonly input?: number;
-			readonly output?: number;
-			readonly totalTokens?: number;
-			readonly cost?: {
-				readonly total?: number;
-			};
-		};
-	}
-	export interface ProviderImagesOptions {
-		readonly apiKey?: string;
-		readonly signal?: AbortSignal;
-		readonly aspectRatio?: string;
-		readonly size?: string;
-		readonly n?: number;
-	}
-	export function generateImages(
-		model: unknown,
-		context: ImagesContext,
-		options?: ProviderImagesOptions,
-	): Promise<AssistantImages>;
-	export const Models: {
-		getModelOfType?(type: "image", provider: string, modelId: string): unknown;
-		getModelsOfType?(type: "image"): readonly unknown[];
-	};
-}
-
+// pi/packages/tui/src/components/image.ts
 declare module "@earendil-works/pi-tui" {
 	export interface ImageTheme {
-		readonly fallbackColor?: (text: string) => string;
+		readonly fallbackColor: (text: string) => string;
 	}
 	export interface ImageOptions {
 		readonly maxWidthCells?: number;
 		readonly maxHeightCells?: number;
 		readonly filename?: string;
 	}
-	export interface ImageDimensions {
-		readonly widthPx: number;
-		readonly heightPx: number;
-	}
 	export class Image {
-		public constructor(
-			base64Data: string,
-			mimeType: string,
-			theme: ImageTheme,
-			options?: ImageOptions,
-			dimensions?: ImageDimensions,
-		);
+		public constructor(base64Data: string, mimeType: string, theme: ImageTheme, options?: ImageOptions);
 		public render(width: number): string[];
 		public invalidate(): void;
 	}
-	export function getImageDimensions(base64Data: string, mimeType: string): ImageDimensions | undefined;
-	export function imageFallback(mimeType: string, dimensions?: ImageDimensions, filename?: string): string;
-	export function getCapabilities(): { readonly images?: string | null };
 }

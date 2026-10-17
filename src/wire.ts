@@ -1,20 +1,11 @@
-import type { CommandDeps } from "./commands/img.js";
-import { createImgCommand, openStudioOverlay } from "./commands/img.js";
-import { createImgGalleryCommand } from "./commands/img-gallery.js";
-import { createImgModelCommand } from "./commands/img-model.js";
-import { createImgQueueCommand } from "./commands/img-queue.js";
-import { createImgSettingsCommand } from "./commands/img-settings.js";
 import { ConfigStore } from "./config/store.js";
 import type { Disposer } from "./core/events.js";
-import type { HostPort, PortableCtx, ToolCallPrecheckResult } from "./host/port.js";
+import type { HostPort, PortableCtx } from "./host/port.js";
 import { DurationStatsStore } from "./jobs/progress.js";
 import { JobQueue } from "./jobs/queue.js";
 import type { PipelineDeps } from "./pipeline/run.js";
-import { estimateJobCostUsd } from "./pipeline/run.js";
 import { HttpClient } from "./providers/http.js";
-import { SecretResolver } from "./providers/port.js";
-import { ProviderRegistry } from "./providers/registry.js";
-import { GalleryStore } from "./storage/gallery.js";
+import { IMG_MODEL_FLAG, ProviderRegistry } from "./providers/registry.js";
 import { ManifestStore } from "./storage/manifest.js";
 import { createImgDescribeJobTool } from "./tools/img-describe-job.js";
 import { createImgEditTool } from "./tools/img-edit.js";
@@ -29,16 +20,12 @@ import { SharedTicker } from "./ui/ticker.js";
 import { buildQueueWidgetVM, buildStatusSegmentVM } from "./ui/view-models.js";
 import { WorkerPool } from "./workers/pool.js";
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-	return typeof v === "object" && v !== null;
-}
-
-const GENERATION_TOOL_NAMES: ReadonlySet<string> = new Set([
-	"img_generate",
-	"img_edit",
-	"img_texture",
-	"img_variations",
-]);
+const STATUS_KEY = "img-pi";
+const QUEUE_WIDGET_KEY = "img-pi-queue";
+/** Widget lines are rendered before the host knows the terminal width. */
+const QUEUE_WIDGET_WIDTH = 80;
+/** Status label before the first model resolution completes, or when none is available. */
+const AUTO_MODEL_LABEL = "auto";
 
 export interface WiredExtension {
 	readonly host: HostPort;
@@ -48,11 +35,14 @@ export interface WiredExtension {
 	readonly ticker: SharedTicker;
 	readonly registry: ProviderRegistry;
 	readonly manifest: ManifestStore;
-	readonly galleryStore: GalleryStore;
 	readonly stats: DurationStatsStore;
 	shutdown(): Promise<void>;
 }
 
+/**
+ * Composition root. Generation is agent-driven: the extension registers tools only,
+ * plus a passive HUD (status segment + queue widget). No commands, no shortcuts.
+ */
 export function wireExtension(host: HostPort): WiredExtension {
 	const configStore = new ConfigStore({
 		agentDir: host.agentDir,
@@ -62,10 +52,8 @@ export function wireExtension(host: HostPort): WiredExtension {
 	const initialConfig = configStore.getEffective();
 	const pool = new WorkerPool();
 	const http = new HttpClient();
-	const secrets = new SecretResolver();
 	const registry = new ProviderRegistry();
 	const manifest = new ManifestStore();
-	const galleryStore = new GalleryStore(manifest, pool);
 	const stats = new DurationStatsStore(host.agentDir);
 	const queue = new JobQueue(initialConfig);
 	const ticker = new SharedTicker(initialConfig.ui.spinnerMs);
@@ -78,7 +66,6 @@ export function wireExtension(host: HostPort): WiredExtension {
 			config: configStore.getEffective(),
 			pool,
 			http,
-			secrets,
 			registry,
 			manifest,
 			queue,
@@ -90,24 +77,18 @@ export function wireExtension(host: HostPort): WiredExtension {
 		getPipelineDeps,
 		ticker,
 		stats,
+		imageComponent: host.imageComponent,
+		previewOptions: () => {
+			const { inlinePreview, thumbMaxCells } = configStore.getEffective().ui;
+			return inlinePreview ? { maxWidthCells: thumbMaxCells.w, maxHeightCells: thumbMaxCells.h } : undefined;
+		},
 	};
 
-	const commandDeps: CommandDeps = {
-		configStore,
-		getPipelineDeps,
-		galleryStore,
-		ticker,
-		stats,
-		projectDirName: host.projectDirName,
-	};
-
-	// Register CLI flag
-	host.registerFlag("img-model", {
-		description: "Override session default image/texture generation model",
+	host.registerFlag(IMG_MODEL_FLAG, {
+		description: "Image model for this session (an id from img_list_models)",
 		type: "string",
 	});
 
-	// Register all 6 tools
 	host.registerTool(createImgGenerateTool(toolDeps));
 	host.registerTool(createImgEditTool(toolDeps));
 	host.registerTool(createImgTextureTool(toolDeps));
@@ -115,94 +96,14 @@ export function wireExtension(host: HostPort): WiredExtension {
 	host.registerTool(createImgListModelsTool(toolDeps));
 	host.registerTool(createImgDescribeJobTool(toolDeps));
 
-	// Register all 5 commands
-	host.registerCommand("img", createImgCommand(commandDeps));
-	host.registerCommand("img:settings", createImgSettingsCommand(commandDeps));
-	host.registerCommand("img:gallery", createImgGalleryCommand(commandDeps));
-	host.registerCommand("img:queue", createImgQueueCommand(commandDeps));
-	host.registerCommand("img:model", createImgModelCommand(commandDeps));
-
-	// Register shortcut ctrl+alt+i
-	host.registerShortcut("ctrl+alt+i", {
-		description: "Open img.pi Studio overlay",
-		async handler(ctx: PortableCtx): Promise<void> {
-			try {
-				await openStudioOverlay(ctx, commandDeps, { initialTab: 1 });
-			} catch (e: unknown) {
-				host.logError("Failed to open Studio via shortcut", e);
-			}
-		},
-	});
-
-	// Pre-call cost guard hook
-	host.onToolCall(
-		async (toolName: string, rawArgs: unknown, ctx: PortableCtx): Promise<ToolCallPrecheckResult | undefined> => {
-			if (!GENERATION_TOOL_NAMES.has(toolName)) {
-				return undefined;
-			}
-			const pDeps = getPipelineDeps(ctx);
-			const argsRec = isRecord(rawArgs) ? rawArgs : {};
-			if (argsRec["dry_run"] === true) {
-				return undefined;
-			}
-
-			let requestedModel: string | undefined;
-			let totalImages = 1;
-
-			if (toolName === "img_variations") {
-				const baseRec = isRecord(argsRec["base"]) ? argsRec["base"] : {};
-				const varyRec = isRecord(argsRec["vary"]) ? argsRec["vary"] : {};
-				requestedModel = typeof baseRec["model"] === "string" ? baseRec["model"] : undefined;
-				const seedsLen = Array.isArray(varyRec["seeds"]) ? varyRec["seeds"].length : 1;
-				const promptsLen = Array.isArray(varyRec["prompts"]) ? varyRec["prompts"].length : 1;
-				const modelsLen = Array.isArray(varyRec["models"]) ? varyRec["models"].length : 1;
-				const stylesLen = Array.isArray(varyRec["styles"]) ? varyRec["styles"].length : 1;
-				totalImages =
-					argsRec["mode"] === "zip"
-						? Math.max(seedsLen, promptsLen, modelsLen, stylesLen)
-						: Math.max(1, seedsLen) * Math.max(1, promptsLen) * Math.max(1, modelsLen) * Math.max(1, stylesLen);
-			} else {
-				requestedModel = typeof argsRec["model"] === "string" ? argsRec["model"] : undefined;
-				totalImages = typeof argsRec["count"] === "number" && argsRec["count"] > 0 ? argsRec["count"] : 1;
-			}
-
-			const resolvedRes = await registry.resolveModel(requestedModel, pDeps);
-			if (!resolvedRes.ok) {
-				return undefined;
-			}
-			const estCost = estimateJobCostUsd(resolvedRes.value.model, totalImages);
-			const maxCost = pDeps.config.limits.maxCostPerCallUsd;
-			if (estCost > maxCost) {
-				if (ctx.mode === "tui") {
-					const approved = await ctx.ui.confirm(
-						"Cost guard",
-						`Estimated cost $${estCost.toFixed(2)} (${totalImages} image(s) on ${resolvedRes.value.model.id}) exceeds limits.maxCostPerCallUsd ($${maxCost.toFixed(2)}). Proceed?`,
-					);
-					if (!approved) {
-						return {
-							block: true,
-							reason: `Cancelled by user: estimated cost $${estCost.toFixed(2)} exceeds limit $${maxCost.toFixed(2)}`,
-						};
-					}
-					return undefined;
-				}
-				return {
-					block: true,
-					reason: `Estimated cost $${estCost.toFixed(2)} exceeds limits.maxCostPerCallUsd ($${maxCost.toFixed(2)})`,
-				};
-			}
-			return undefined;
-		},
-	);
-
 	let sessionDisposers: Disposer[] = [];
 
 	const disposeSessionListeners = (): void => {
 		for (const dispose of sessionDisposers) {
 			try {
 				dispose();
-			} catch {
-				// Ignore disposer failure
+			} catch (e: unknown) {
+				host.logError("img.pi listener dispose failed", e);
 			}
 		}
 		sessionDisposers = [];
@@ -215,22 +116,16 @@ export function wireExtension(host: HostPort): WiredExtension {
 			await configStore.load();
 			await stats.load();
 
-			const flagModel = host.getFlag("img-model");
-			if (typeof flagModel === "string" && flagModel.trim().length > 0) {
-				configStore.setSessionLayer({
-					defaults: { model: flagModel.trim() },
-				});
-			}
-
 			const cfg = configStore.getEffective();
 			queue.setMaxConcurrent(cfg.queue.maxConcurrent);
 			ticker.setIntervalMs(cfg.ui.spinnerMs);
-
-			if (cfg.compat.hideBuiltin && host.deactivateBuiltinImageTool !== undefined) {
-				host.deactivateBuiltinImageTool();
+			if (cfg.compat.hideBuiltin) {
+				host.deactivateBuiltinImageTool?.();
 			}
 
 			const noColor = process.env["NO_COLOR"] !== undefined;
+			let activeModelLabel = AUTO_MODEL_LABEL;
+
 			const refreshHud = (): void => {
 				if (ctx.mode !== "tui") {
 					return;
@@ -239,46 +134,48 @@ export function wireExtension(host: HostPort): WiredExtension {
 				const snap = queue.snapshot();
 				ticker.setActiveJobCount(snap.runningCount);
 
-				if (currentCfg.ui.statusSegment) {
-					const statusVM = buildStatusSegmentVM({
-						snapshot: snap,
-						defaultModelLabel: currentCfg.defaults.model,
-						spinnerTick: ticker.currentTick,
-						nowMs: Date.now(),
-						noColor,
-					});
-					ctx.ui.setStatus("img-pi", statusVM.text);
-				} else {
-					ctx.ui.setStatus("img-pi", undefined);
-				}
+				const statusText = currentCfg.ui.statusSegment
+					? buildStatusSegmentVM({
+							snapshot: snap,
+							defaultModelLabel: activeModelLabel,
+							spinnerTick: ticker.currentTick,
+							nowMs: Date.now(),
+							noColor,
+						}).text
+					: undefined;
+				ctx.ui.setStatus(STATUS_KEY, statusText);
 
-				if (currentCfg.ui.queueWidget) {
-					const widgetVM = buildQueueWidgetVM({
-						snapshot: snap,
-						nowMs: Date.now(),
-						spinnerTick: ticker.currentTick,
-						noColor,
-					});
-					if (widgetVM.visible) {
-						const lines = renderQueueWidget(widgetVM, 80, PLAIN_THEME);
-						ctx.ui.setWidget("img-pi-queue", lines);
-					} else {
-						ctx.ui.setWidget("img-pi-queue", undefined);
-					}
-				} else {
-					ctx.ui.setWidget("img-pi-queue", undefined);
-				}
+				const widgetVM = buildQueueWidgetVM({
+					snapshot: snap,
+					nowMs: Date.now(),
+					spinnerTick: ticker.currentTick,
+					noColor,
+				});
+				const showWidget = currentCfg.ui.queueWidget && widgetVM.visible;
+				ctx.ui.setWidget(
+					QUEUE_WIDGET_KEY,
+					showWidget ? renderQueueWidget(widgetVM, QUEUE_WIDGET_WIDTH, PLAIN_THEME) : undefined,
+				);
 			};
 
-			sessionDisposers.push(
-				queue.onUpdate(() => {
-					refreshHud();
-				}),
-				ticker.onTick(() => {
-					refreshHud();
-				}),
-			);
-			refreshHud();
+			/** The label is whatever the registry would pick right now, straight from the host. */
+			const refreshModelLabel = async (): Promise<void> => {
+				const res = await registry.resolveModel(undefined, getPipelineDeps(ctx));
+				activeModelLabel = res.ok ? res.value.model.label : AUTO_MODEL_LABEL;
+				refreshHud();
+			};
+
+			const refreshAll = (): void => {
+				const currentCfg = configStore.getEffective();
+				queue.setMaxConcurrent(currentCfg.queue.maxConcurrent);
+				ticker.setIntervalMs(currentCfg.ui.spinnerMs);
+				void refreshModelLabel().catch((e: unknown) => {
+					host.logError("img.pi model label refresh failed", e);
+				});
+			};
+
+			sessionDisposers.push(configStore.onChange(refreshAll), queue.onUpdate(refreshHud), ticker.onTick(refreshHud));
+			refreshAll();
 		} catch (e: unknown) {
 			host.logError("Failed during img.pi session_start", e);
 		}
@@ -301,16 +198,5 @@ export function wireExtension(host: HostPort): WiredExtension {
 		}
 	});
 
-	return {
-		host,
-		configStore,
-		pool,
-		queue,
-		ticker,
-		registry,
-		manifest,
-		galleryStore,
-		stats,
-		shutdown,
-	};
+	return { host, configStore, pool, queue, ticker, registry, manifest, stats, shutdown };
 }

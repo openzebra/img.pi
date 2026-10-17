@@ -14,21 +14,25 @@ import type { ImgEditParams } from "./schemas.js";
 import { IMG_EDIT_SCHEMA } from "./schemas.js";
 
 export const IMG_EDIT_DESCRIPTION =
-	"Edit, inpaint, outpaint, or vary an existing image (file path, URL, data URI, or @last / @job:<id>). " +
-	"Examples: (1) Photo edit: {image:'@last', prompt:'replace sky with golden hour sunset', mode:'edit', strength:0.65} " +
-	"(2) Texture seam inpaint: {image:'stone.png', mask:'seam_mask.png', prompt:'seamless mossy stone', mode:'inpaint'}.";
+	"Change an existing image: apply edits, inpaint a masked area, outpaint, or make a variation. Call this whenever " +
+	"the user asks to modify, fix, recolor, extend, or restyle an image; '@last' is the most recent result, " +
+	"'@job:<id>' a specific job, or pass a file path / URL. Requires a model that accepts input images (img_list_models " +
+	"shows 'generate + edit'). The result is saved under .pi/img/images. " +
+	"Examples: {image:'@last', prompt:'make the cat black and add a red collar'} · " +
+	"{image:'logo.png', prompt:'same logo on a transparent background', mode:'edit'}.";
+
+const IMG_EDIT_SNIPPET = "img_edit: modify an existing image ('@last', a path, or a URL) from a text instruction";
 
 export function createImgEditTool(deps: ToolRuntimeDeps): PortableTool<ImgEditParams, GenerateDetails> {
-	const renderers = createPortableJobRenderers<ImgEditParams & Record<string, unknown>>(
-		"img_edit",
-		deps.ticker,
-		deps.stats,
-	);
+	const renderers = createPortableJobRenderers<ImgEditParams & Record<string, unknown>>("img_edit", deps);
 
 	return {
 		name: "img_edit",
 		label: "Edit Image",
 		description: IMG_EDIT_DESCRIPTION,
+		essential: true,
+		approval: "write",
+		promptSnippet: IMG_EDIT_SNIPPET,
 		parameters: IMG_EDIT_SCHEMA.jsonSchema,
 		async execute(
 			_toolCallId: string,

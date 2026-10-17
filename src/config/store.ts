@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { configInvalid, fromUnknownError, type ImgError } from "../core/errors";
+import { type Disposer, TypedEmitter } from "../core/events";
 import { err, ok, type Result, tryAsync } from "../core/result";
 import { type ConfigLayerSet, resolveConfigLayers } from "./layers";
 import { migrateConfig } from "./migrate";
@@ -64,6 +65,7 @@ async function atomicWriteJson(filePath: string, data: unknown): Promise<Result<
 export class ConfigStore {
 	readonly #agentDir: string;
 	readonly #projectDirName: ".omp" | ".pi";
+	readonly #changeEmitter = new TypedEmitter<ImgConfig>();
 	#cwd: string;
 	#userLayer: PartialConfig | undefined;
 	#projectLayer: PartialConfig | undefined;
@@ -77,6 +79,10 @@ export class ConfigStore {
 		this.#agentDir = opts.agentDir;
 		this.#cwd = opts.cwd;
 		this.#projectDirName = opts.projectDirName;
+	}
+
+	public onChange(fn: (cfg: ImgConfig) => void): Disposer {
+		return this.#changeEmitter.on(fn);
 	}
 
 	public setCwd(cwd: string): void {
@@ -96,7 +102,9 @@ export class ConfigStore {
 
 		this.#userLayer = userRes.value;
 		this.#projectLayer = projRes.value;
-		return ok(this.getEffective());
+		const eff = this.getEffective();
+		this.#changeEmitter.emit(eff);
+		return ok(eff);
 	}
 
 	public getLayers(callLayer?: PartialConfig): ConfigLayerSet {
@@ -120,7 +128,9 @@ export class ConfigStore {
 		} else {
 			this.#sessionLayer = undefined;
 		}
-		return ok(this.getEffective());
+		const eff = this.getEffective();
+		this.#changeEmitter.emit(eff);
+		return ok(eff);
 	}
 
 	public setScopeLayer(scope: "user" | "project", patch: PartialConfig | undefined): Result<ImgConfig, ImgError> {
@@ -139,7 +149,9 @@ export class ConfigStore {
 				this.#projectLayer = undefined;
 			}
 		}
-		return ok(this.getEffective());
+		const eff = this.getEffective();
+		this.#changeEmitter.emit(eff);
+		return ok(eff);
 	}
 
 	public async saveScope(scope: "user" | "project", config: PartialConfig): Promise<Result<ImgConfig, ImgError>> {
@@ -155,6 +167,8 @@ export class ConfigStore {
 		} else {
 			this.#projectLayer = validated.value;
 		}
-		return ok(this.getEffective());
+		const eff = this.getEffective();
+		this.#changeEmitter.emit(eff);
+		return ok(eff);
 	}
 }

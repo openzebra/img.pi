@@ -44,7 +44,8 @@ export type PathForbiddenReason = "outside_root" | "exists" | "not_writable";
 
 export type ImgError =
 	| { readonly kind: "config_invalid"; readonly path: string; readonly message: string }
-	| { readonly kind: "no_api_key"; readonly provider: string; readonly envHint?: string }
+	| { readonly kind: "no_api_key"; readonly provider: string }
+	| { readonly kind: "no_image_models" }
 	| { readonly kind: "model_not_found"; readonly model: string; readonly suggestions: readonly string[] }
 	| { readonly kind: "unsupported"; readonly model: string; readonly feature: Capability }
 	| { readonly kind: "ref_unreadable"; readonly source: string; readonly reason: string }
@@ -66,12 +67,14 @@ export function configInvalid(path: string, message: string): ImgError {
 	return Object.freeze({ kind: "config_invalid", path, message });
 }
 
-export function noApiKey(provider: string, envHint?: string): ImgError {
-	return Object.freeze({
-		kind: "no_api_key",
-		provider,
-		...(envHint !== undefined ? { envHint } : {}),
-	});
+export function noApiKey(provider: string): ImgError {
+	return Object.freeze({ kind: "no_api_key", provider });
+}
+
+const NO_IMAGE_MODELS_SINGLETON: ImgError = Object.freeze({ kind: "no_image_models" });
+
+export function noImageModels(): ImgError {
+	return NO_IMAGE_MODELS_SINGLETON;
 }
 
 export function modelNotFound(model: string, suggestions: readonly string[] = []): ImgError {
@@ -160,9 +163,9 @@ export function formatImgError(error: ImgError): string {
 		case "config_invalid":
 			return `config_invalid (${error.path}): ${error.message}`;
 		case "no_api_key":
-			return error.envHint
-				? `no_api_key (${error.provider}): set ${error.envHint} or configure /img:settings → Providers`
-				: `no_api_key (${error.provider}): credentials not configured`;
+			return `no_api_key (${error.provider}): credentials unavailable — log in to ${error.provider} in the host (/login)`;
+		case "no_image_models":
+			return "no_image_models: the host has no connected provider with image models — connect one via /login";
 		case "model_not_found": {
 			const hint = error.suggestions.length > 0 ? ` (did you mean: ${error.suggestions.join(", ")}?)` : "";
 			return `model_not_found: '${error.model}'${hint}`;

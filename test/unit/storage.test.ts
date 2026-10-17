@@ -3,12 +3,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { SIDECAR_SCHEMA_VERSION } from "../../src/domain/artifact.js";
-import { GalleryStore } from "../../src/storage/gallery.js";
 import { ManifestStore } from "../../src/storage/manifest.js";
 import { expandFilenameTemplate, resolveSafeOutputPath } from "../../src/storage/paths.js";
 import { writeArtifact, writeGltfMaterialJson } from "../../src/storage/writer.js";
+import { ARTIFACT_PATHS } from "../../src/domain/artifact-paths.js";
 
-describe("storage/paths, writer, manifest, gallery", () => {
+describe("storage/paths, writer, manifest", () => {
 	let tmpCwd: string;
 
 	beforeEach(async () => {
@@ -59,7 +59,7 @@ describe("storage/paths, writer, manifest, gallery", () => {
 		}
 	});
 
-	test("resolveSafeOutputPath enforces cwd sandbox, blocks .git/node_modules/.omp, and handles conflicts", async () => {
+	test("resolveSafeOutputPath enforces cwd sandbox, allows only .pi/img among host dirs, and handles conflicts", async () => {
 		const outside = await resolveSafeOutputPath({
 			cwd: tmpCwd,
 			outputDir: "../outside-dir",
@@ -73,7 +73,14 @@ describe("storage/paths, writer, manifest, gallery", () => {
 			expect(outside.error.kind).toBe("path_forbidden");
 		}
 
-		for (const forbiddenDir of [".git/hooks", "node_modules/pkg", ".omp/extensions", ".pi/agent"]) {
+		for (const forbiddenDir of [
+			".git/hooks",
+			"node_modules/pkg",
+			".omp/extensions",
+			".pi/agent",
+			".pi/imgx",
+			".pi/img/node_modules",
+		]) {
 			const res = await resolveSafeOutputPath({
 				cwd: tmpCwd,
 				outputDir: forbiddenDir,
@@ -87,6 +94,16 @@ describe("storage/paths, writer, manifest, gallery", () => {
 				expect(res.error.kind).toBe("path_forbidden");
 			}
 		}
+
+		const artifactRoot = await resolveSafeOutputPath({
+			cwd: tmpCwd,
+			outputDir: ARTIFACT_PATHS.images,
+			relativeStem: "cat",
+			format: "png",
+			allowOutsideCwd: false,
+			onConflict: "suffix",
+		});
+		expect(artifactRoot.ok ? artifactRoot.value.relativePath : "forbidden").toBe(".pi/img/images/cat.png");
 
 		// Conflict policies: suffix, error, overwrite
 		const first = await resolveSafeOutputPath({
@@ -135,9 +152,8 @@ describe("storage/paths, writer, manifest, gallery", () => {
 		}
 	});
 
-	test("writeArtifact, ManifestStore, @last/@job resolution, and GalleryStore query", async () => {
+	test("writeArtifact, ManifestStore, and @last/@job resolution", async () => {
 		const manifest = new ManifestStore();
-		const gallery = new GalleryStore(manifest);
 		const manifestRel = ".img-pi/manifest.jsonl";
 
 		const resolvedPath = await resolveSafeOutputPath({
@@ -209,13 +225,6 @@ describe("storage/paths, writer, manifest, gallery", () => {
 
 		const idRef = await manifest.resolveJobReference(tmpCwd, manifestRel, "@job:01JXA9K3#1");
 		expect(idRef.ok).toBe(true);
-
-		const galleryPage = await gallery.query(tmpCwd, manifestRel, { tag: "#stone" });
-		expect(galleryPage.ok).toBe(true);
-		if (galleryPage.ok) {
-			expect(galleryPage.value.total).toBe(1);
-			expect(galleryPage.value.items[0]?.prompt).toBe("mossy stone wall");
-		}
 
 		const gltfRes = await writeGltfMaterialJson({
 			directory: path.join(tmpCwd, "generated/textures"),

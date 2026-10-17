@@ -159,16 +159,13 @@ export function expandVariations(
 }
 
 export function createImgVariationsTool(deps: ToolRuntimeDeps): PortableTool<ImgVariationsParams, GenerateDetails> {
-	const renderers = createPortableJobRenderers<ImgVariationsParams & Record<string, unknown>>(
-		"img_variations",
-		deps.ticker,
-		deps.stats,
-	);
+	const renderers = createPortableJobRenderers<ImgVariationsParams & Record<string, unknown>>("img_variations", deps);
 
 	return {
 		name: "img_variations",
 		label: "Generate Image Variations",
 		description: IMG_VARIATIONS_DESCRIPTION,
+		approval: "write",
 		parameters: IMG_VARIATIONS_SCHEMA.jsonSchema,
 		async execute(
 			_toolCallId: string,
