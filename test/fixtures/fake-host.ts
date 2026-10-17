@@ -61,6 +61,10 @@ export class FakeHost implements HostPort {
 	public configured: string | undefined;
 	public flags = new Map<string, string>();
 	public costPerCallUsd: number | undefined;
+	/** Host-internal URLs the fake resolves (`local://x.png` → absolute path). */
+	public readonly hostUrls = new Map<string, string>();
+	/** When set, every `generateNative` call fails with this error. */
+	public failWith: ImgError | undefined;
 
 	public constructor(agentDir: string, models: readonly HostImageModel[] = [GOOGLE_IMAGE_MODEL]) {
 		this.agentDir = agentDir;
@@ -121,6 +125,9 @@ export class FakeHost implements HostPort {
 		_signal: AbortSignal,
 	): Promise<Result<NativeResponse, ImgError>> {
 		this.requests.push(req);
+		if (this.failWith !== undefined) {
+			return Promise.resolve(err(this.failWith));
+		}
 		if (!this.models.some(m => m.id === req.model)) {
 			return Promise.resolve(err(modelNotFound(req.model)));
 		}
@@ -132,6 +139,10 @@ export class FakeHost implements HostPort {
 				...(this.costPerCallUsd !== undefined ? { usage: { costUsd: this.costPerCallUsd } } : {}),
 			}),
 		);
+	}
+
+	public resolveHostUrl(_ctx: PortableCtx, url: string): Promise<Result<string | undefined, ImgError>> {
+		return Promise.resolve(ok(this.hostUrls.get(url)));
 	}
 
 	public logError(): void {

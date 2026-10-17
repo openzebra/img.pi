@@ -1,11 +1,25 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import type * as OmpAiModule from "@oh-my-pi/pi-ai";
-import type { ImgError } from "../core/errors.js";
-import { abortedError, errorMessage, fromUnknownError, modelNotFound, noApiKey, providerHttp } from "../core/errors.js";
+import type * as OmpAiErrorModule from "@oh-my-pi/pi-ai/error";
+import type * as OmpRetryAfterModule from "@oh-my-pi/pi-ai/utils/retry-after";
+import type * as OmpCatalogModelsModule from "@oh-my-pi/pi-catalog/models";
+import type * as OmpLocalProtocolModule from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
+import type { ImgError, ProviderFailureDetail } from "../core/errors.js";
+import {
+	abortedError,
+	errorMessage,
+	fromUnknownError,
+	modelNotFound,
+	noApiKey,
+	providerHttp,
+	quotaExhausted,
+	readHttpFailure,
+	refUnreadable,
+} from "../core/errors.js";
 import { deepFreeze } from "../core/freeze.js";
 import type { Result } from "../core/result.js";
-import { err, ok, tryAsync } from "../core/result.js";
+import { err, ok, tryAsync, trySync } from "../core/result.js";
 import type { HostToolFields, TuiModule } from "./base.js";
 import {
 	BaseHost,
@@ -29,6 +43,16 @@ import type {
 export { wrapPortableCtx } from "./base.js";
 
 type OmpAi = typeof OmpAiModule;
+
+/** Host failure classifiers (oh-my-pi/packages/ai/src/error/rate-limit.ts:383, retryable.ts:20, utils/retry-after.ts:31). */
+interface OmpErrorClassifier {
+	readonly isUsageLimitOutcome: typeof OmpAiErrorModule.isUsageLimitOutcome;
+	readonly isTransientStatus: typeof OmpAiErrorModule.isTransientStatus;
+	readonly getRetryAfterMsFromHeaders: typeof OmpRetryAfterModule.getRetryAfterMsFromHeaders;
+}
+
+/** Scheme omp stores pasted images under (oh-my-pi/.../modes/controllers/input-controller.ts:2163). */
+const OMP_LOCAL_SCHEME = "local://";
 
 /** omp `ImageGenerationRequest` carries both (oh-my-pi/packages/ai/src/images/types.ts). */
 const OMP_IMAGE_OPTIONS: HostImageOptions = deepFreeze({ aspectRatio: true, imageSize: true });
@@ -83,11 +107,15 @@ function toHostImageModel(m: Readonly<Record<string, unknown>>): HostImageModel 
 	};
 }
 
-/** Session model when it can carry the hosted tool on the same provider, else the first available carrier. */
+/**
+ * Session model when it can carry the hosted tool on the same provider, else the cheapest
+ * available carrier there (oh-my-pi/packages/coding-agent/src/tools/image-gen.ts:145).
+ */
 function resolveCarrier(
 	reg: Record<string, unknown>,
 	model: Readonly<Record<string, unknown>>,
 	sessionModel: unknown,
+	inputCost: (m: Readonly<Record<string, unknown>>) => number,
 ): Record<string, unknown> | undefined {
 	if (model["hostedImage"] === true) {
 		return { ...model };
@@ -96,9 +124,43 @@ function resolveCarrier(
 	if (isRecord(sessionModel) && sessionModel["provider"] === provider && sessionModel["hostedImage"] === true) {
 		return sessionModel;
 	}
-	return recordList(callRegistry(reg, "getAvailable")).find(
-		c => c["provider"] === provider && c["hostedImage"] === true,
-	);
+	let carrier: Record<string, unknown> | undefined;
+	let carrierInput = Infinity;
+	for (const c of recordList(callRegistry(reg, "getAvailable"))) {
+		if (c["provider"] !== provider || c["hostedImage"] !== true) continue;
+		const input = inputCost(c);
+		if (carrier === undefined || input < carrierInput) {
+			carrier = c;
+			carrierInput = input;
+		}
+	}
+	return carrier;
+}
+
+/** Maps a thrown host error to the `ImgError` the agent and the failed-request record see. */
+function toImageError(
+	e: unknown,
+	model: string,
+	via: string | undefined,
+	classifier: OmpErrorClassifier | undefined,
+): ImgError {
+	const http = readHttpFailure(e);
+	if (http === undefined) {
+		return fromUnknownError(e);
+	}
+	const retryAfterMs =
+		classifier !== undefined && http.headers !== undefined
+			? classifier.getRetryAfterMsFromHeaders(http.headers)
+			: undefined;
+	const detail: ProviderFailureDetail = {
+		...(http.code !== undefined ? { code: http.code } : {}),
+		...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+		...(via !== undefined ? { via } : {}),
+	};
+	if (classifier?.isUsageLimitOutcome(http.status, http.message) === true) {
+		return quotaExhausted(model, http.status, http.message, detail);
+	}
+	return providerHttp(model, http.status, http.message, classifier?.isTransientStatus(http.status) ?? false, detail);
 }
 
 function withResolvedHeaders(
@@ -109,6 +171,12 @@ function withResolvedHeaders(
 		...model,
 		resolveHeaders: (signal?: AbortSignal): unknown => callRegistry(reg, "resolveModelHeaders", model, signal),
 	};
+}
+
+function loadHostModule<T>(specifier: string, load: () => Promise<T>): Promise<Result<T, ImgError>> {
+	return tryAsync(load, (e: unknown) =>
+		providerHttp("omp", 0, `'${specifier}' unavailable: ${errorMessage(e)}`, false),
+	);
 }
 
 export class OmpHost extends BaseHost {
@@ -133,9 +201,53 @@ export class OmpHost extends BaseHost {
 	}
 
 	private loadAi(): Promise<Result<OmpAi, ImgError>> {
-		return tryAsync(
-			() => import("@oh-my-pi/pi-ai"),
-			(e: unknown) => providerHttp("omp", 0, `'@oh-my-pi/pi-ai' unavailable: ${errorMessage(e)}`, false),
+		return loadHostModule("@oh-my-pi/pi-ai", () => import("@oh-my-pi/pi-ai"));
+	}
+
+	/** Absent classifiers degrade to an unclassified `provider_http`; the status is still reported. */
+	private async loadErrorClassifier(): Promise<OmpErrorClassifier | undefined> {
+		const res = await tryAsync(
+			() => Promise.all([import("@oh-my-pi/pi-ai/error"), import("@oh-my-pi/pi-ai/utils/retry-after")]),
+			() => undefined,
+		);
+		if (!res.ok) {
+			return undefined;
+		}
+		const [errors, retryAfter] = res.value;
+		return {
+			isUsageLimitOutcome: errors.isUsageLimitOutcome,
+			isTransientStatus: errors.isTransientStatus,
+			getRetryAfterMsFromHeaders: retryAfter.getRetryAfterMsFromHeaders,
+		};
+	}
+
+	/** omp's `local://` root lives in the session artifacts dir (internal-urls/local-protocol.ts:240,296). */
+	public override async resolveHostUrl(ctx: PortableCtx, url: string): Promise<Result<string | undefined, ImgError>> {
+		if (!url.startsWith(OMP_LOCAL_SCHEME)) {
+			return ok(undefined);
+		}
+		const modRes = await loadHostModule(
+			"@oh-my-pi/pi-coding-agent/internal-urls/local-protocol",
+			(): Promise<typeof OmpLocalProtocolModule> => import("@oh-my-pi/pi-coding-agent/internal-urls/local-protocol"),
+		);
+		if (!modRes.ok) {
+			return modRes;
+		}
+		const raw = isRecord(ctx.raw) ? ctx.raw : {};
+		const mgr = isRecord(raw["sessionManager"]) ? raw["sessionManager"] : {};
+		const callMgr = (name: string): string | null => {
+			const fn = mgr[name];
+			const value: unknown = isCallable(fn) ? fn.call(mgr) : undefined;
+			return typeof value === "string" ? value : null;
+		};
+		const local = modRes.value;
+		return trySync(
+			() =>
+				local.resolveLocalUrlToPath(url, {
+					getArtifactsDir: () => callMgr("getArtifactsDir"),
+					getSessionId: () => callMgr("getSessionId"),
+				}),
+			(e: unknown) => refUnreadable(url, errorMessage(e)),
 		);
 	}
 
@@ -201,9 +313,22 @@ export class OmpHost extends BaseHost {
 
 		const raw = isRecord(ctx.raw) ? ctx.raw : {};
 		const api = readString(model, "api") ?? "";
-		const carrier = HOSTED_IMAGE_APIS.has(api) ? resolveCarrier(reg, model, raw["model"]) : undefined;
-		if (HOSTED_IMAGE_APIS.has(api) && (carrier === undefined || !(await isAuthenticated(carrier)))) {
-			return err(noApiKey(provider));
+		let carrier: Record<string, unknown> | undefined;
+		if (HOSTED_IMAGE_APIS.has(api)) {
+			const catalogRes = await loadHostModule(
+				"@oh-my-pi/pi-catalog/models",
+				(): Promise<typeof OmpCatalogModelsModule> => import("@oh-my-pi/pi-catalog/models"),
+			);
+			if (!catalogRes.ok) {
+				return catalogRes;
+			}
+			const { getEffectiveTokenCost } = catalogRes.value;
+			carrier = resolveCarrier(reg, model, raw["model"], m =>
+				isRecord(m["cost"]) ? getEffectiveTokenCost(m["cost"]).input : Infinity,
+			);
+			if (carrier === undefined || !(await isAuthenticated(carrier))) {
+				return err(noApiKey(provider));
+			}
 		}
 		const authTarget = carrier ?? model;
 		const resolver: unknown = callRegistry(reg, "resolver", authTarget, sessionId);
@@ -229,10 +354,11 @@ export class OmpHost extends BaseHost {
 						...(carrier !== undefined ? { carrier: withResolvedHeaders(reg, carrier) } : {}),
 					},
 				),
-			fromUnknownError,
+			(e: unknown) => e,
 		);
 		if (!genRes.ok) {
-			return genRes;
+			const via = carrier !== undefined ? modelSelector(carrier) : undefined;
+			return err(toImageError(genRes.error, req.model, via, await this.loadErrorClassifier()));
 		}
 		const result = genRes.value;
 		const usage = toNativeUsage(result.usage);

@@ -193,6 +193,8 @@ export interface HostPort {
 	/** Available image models, sorted: session provider first, then provider label, then label. */
 	nativeImageModels(ctx: PortableCtx): Promise<Result<readonly HostImageModel[], ImgError>>;
 	generateNative(ctx: PortableCtx, req: NativeRequest, signal: AbortSignal): Promise<Result<NativeResponse, ImgError>>;
+	/** Host-internal URL (e.g. omp `local://`) → absolute file path; `undefined` for schemes the host does not back. */
+	resolveHostUrl(ctx: PortableCtx, url: string): Promise<Result<string | undefined, ImgError>>;
 	deactivateBuiltinImageTool?(): void;
 	logError(msg: string, err?: unknown): void;
 }

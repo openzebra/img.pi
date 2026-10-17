@@ -19,6 +19,8 @@ export interface LoadReferencesContext {
 	readonly manifest: ManifestStore;
 	readonly pool: WorkerPool;
 	readonly signal: AbortSignal;
+	/** Host-internal URL → absolute file path; `undefined` when the host does not back that scheme. */
+	readonly resolveHostUrl: (url: string) => Promise<Result<string | undefined, ImgError>>;
 }
 
 function guessMimeFromPath(filePath: string): string {
@@ -86,6 +88,36 @@ async function readLocalImageFile(
 	});
 }
 
+async function readLocalReference(
+	ref: ReferenceImage,
+	targetPath: string,
+	allowOutsideCwd: boolean,
+	ctx: LoadReferencesContext,
+): Promise<Result<PreparedReference, ImgError>> {
+	const fileRes = await readLocalImageFile(ref.source, targetPath, ctx.cwd, allowOutsideCwd);
+	if (!fileRes.ok) {
+		return fileRes;
+	}
+	const encRes = await ctx.pool.run({
+		op: "encode_b64",
+		buffer: fileRes.value.buffer.slice(0),
+	});
+	if (!encRes.ok) {
+		return encRes;
+	}
+	return ok(
+		Object.freeze({
+			source: ref.source,
+			role: ref.role,
+			weight: ref.weight,
+			buffer: fileRes.value.buffer,
+			b64: encRes.value.b64,
+			mimeType: fileRes.value.mimeType,
+			sha256: encRes.value.sha256,
+		}),
+	);
+}
+
 export async function prepareSingleReference(
 	ref: ReferenceImage,
 	ctx: LoadReferencesContext,
@@ -146,52 +178,20 @@ export async function prepareSingleReference(
 			if (!jobDocRes.ok) {
 				return jobDocRes;
 			}
-			const fileRes = await readLocalImageFile(ref.source, jobDocRes.value.path, ctx.cwd, ctx.allowOutsideCwd);
-			if (!fileRes.ok) {
-				return fileRes;
-			}
-			const encRes = await ctx.pool.run({
-				op: "encode_b64",
-				buffer: fileRes.value.buffer.slice(0),
-			});
-			if (!encRes.ok) {
-				return encRes;
-			}
-			return ok(
-				Object.freeze({
-					source: ref.source,
-					role: ref.role,
-					weight: ref.weight,
-					buffer: fileRes.value.buffer,
-					b64: encRes.value.b64,
-					mimeType: fileRes.value.mimeType,
-					sha256: encRes.value.sha256,
-				}),
-			);
+			return readLocalReference(ref, jobDocRes.value.path, ctx.allowOutsideCwd, ctx);
 		}
-		case "path": {
-			const fileRes = await readLocalImageFile(ref.source, ref.source, ctx.cwd, ctx.allowOutsideCwd);
-			if (!fileRes.ok) {
-				return fileRes;
+		case "path":
+			return readLocalReference(ref, ref.source, ctx.allowOutsideCwd, ctx);
+		case "host_url": {
+			const resolved = await ctx.resolveHostUrl(ref.source);
+			if (!resolved.ok) {
+				return resolved;
 			}
-			const encRes = await ctx.pool.run({
-				op: "encode_b64",
-				buffer: fileRes.value.buffer.slice(0),
-			});
-			if (!encRes.ok) {
-				return encRes;
+			if (resolved.value === undefined) {
+				return err(refUnreadable(ref.source, "the host does not resolve this URL scheme to a file"));
 			}
-			return ok(
-				Object.freeze({
-					source: ref.source,
-					role: ref.role,
-					weight: ref.weight,
-					buffer: fileRes.value.buffer,
-					b64: encRes.value.b64,
-					mimeType: fileRes.value.mimeType,
-					sha256: encRes.value.sha256,
-				}),
-			);
+			// The host owns this file (e.g. a pasted image in its session dir), so it may sit outside cwd.
+			return readLocalReference(ref, resolved.value, true, ctx);
 		}
 		default: {
 			const _exhaustive: never = kind;

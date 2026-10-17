@@ -4,7 +4,7 @@ import { fuzzySuggest, levenshtein, newJobId, shortJobId, toSlug } from "../../s
 import { Artifact, SIDECAR_SCHEMA_VERSION, type SidecarDocument } from "../../src/domain/artifact";
 import { createInitialJobState, reduceJob } from "../../src/domain/job";
 import { OutputSpec, validateTemplateTokens } from "../../src/domain/output";
-import { parseJobRef, ReferenceImage } from "../../src/domain/reference";
+import { classifyReferenceSource, parseJobRef, ReferenceImage } from "../../src/domain/reference";
 import { GenerationRequest } from "../../src/domain/request";
 import { parseAspectRatio, Size, type SizeRequest, type SizeRule, snapSize } from "../../src/domain/size";
 import { TextureSpec } from "../../src/domain/texture";
@@ -810,6 +810,18 @@ describe("domain/job — state machine reducer", () => {
 		});
 		expect(s3.phase).toBe("failed");
 		expect(s3.error?.kind).toBe("provider_http");
+	});
+});
+
+describe("domain/reference — source kinds", () => {
+	// Regression: omp `local://pasted-image-*.png` was classified as a cwd-relative path.
+	test("host-internal URLs are host_url; http(s), data:, job refs and drive paths keep their kinds", () => {
+		expect(classifyReferenceSource("local://pasted-image-81a9.png")).toBe("host_url");
+		expect(classifyReferenceSource("https://example.com/a.png")).toBe("url");
+		expect(classifyReferenceSource("data:image/png;base64,AAAA")).toBe("data_uri");
+		expect(classifyReferenceSource("@last")).toBe("job_ref");
+		expect(classifyReferenceSource(".pi/ref/lab.png")).toBe("path");
+		expect(classifyReferenceSource("C:\\refs\\lab.png")).toBe("path");
 	});
 });
 

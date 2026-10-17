@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import type { ImgConfig } from "../config/schema.js";
 import type { ImgError } from "../core/errors.js";
-import { configInvalid, internalError, unsupportedFeature } from "../core/errors.js";
+import { configInvalid, formatImgError, internalError, unsupportedFeature } from "../core/errors.js";
 import { newJobId, toSlug } from "../core/ids.js";
 import type { Result } from "../core/result.js";
 import { err, ok, tryAsync } from "../core/result.js";
@@ -180,6 +180,7 @@ export async function runGenerationJob(
 				manifest: deps.manifest,
 				pool: deps.pool,
 				signal: execCtx.signal,
+				resolveHostUrl: (url: string) => deps.host.resolveHostUrl(deps.hostCtx, url),
 			};
 
 			// 1. Prepare references
@@ -600,7 +601,22 @@ export async function runGenerationJob(
 
 	if (!jobResult.ok) {
 		if (jobResult.error.kind !== "aborted") {
-			await saveFailedJobRequest(deps.hostCtx.cwd, jobId, request.toPlain(), jobResult.error);
+			const failedState = deps.queue.getJob(jobId);
+			await saveFailedJobRequest(deps.hostCtx.cwd, jobId, request.toPlain(), jobResult.error, {
+				host: deps.host.kind,
+				provider: model.provider,
+				model: model.id,
+				...(failedState?.failedPhase !== undefined ? { failedPhase: failedState.failedPhase } : {}),
+				...(failedState?.startedAt !== undefined && failedState.finishedAt !== undefined
+					? { durationMs: failedState.finishedAt - failedState.startedAt }
+					: {}),
+				...(failedState !== undefined ? { phaseMs: failedState.timings } : {}),
+				finalPrompt: expanded.finalPrompt,
+				...(expanded.negativePrompt !== undefined ? { negativePrompt: expanded.negativePrompt } : {}),
+				references: request.references.map(ref => ({ source: ref.source, kind: ref.kind, role: ref.role })),
+				warnings: failedState?.warnings ?? warnings,
+				message: formatImgError(jobResult.error),
+			});
 		}
 		return jobResult;
 	}

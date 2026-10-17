@@ -44,6 +44,31 @@ declare module "@oh-my-pi/pi-ai" {
 	export const NO_AUTH_SENTINEL: string;
 }
 
+// oh-my-pi/packages/ai/src/error/rate-limit.ts:383, error/retryable.ts:20
+declare module "@oh-my-pi/pi-ai/error" {
+	export function isUsageLimitOutcome(status: number | undefined, message: string | undefined): boolean;
+	export function isTransientStatus(status: number | undefined): boolean;
+}
+
+// oh-my-pi/packages/ai/src/utils/retry-after.ts:31 (`HeadersLike` = Headers | record | undefined)
+declare module "@oh-my-pi/pi-ai/utils/retry-after" {
+	export function getRetryAfterMsFromHeaders(headers: unknown): number | undefined;
+}
+
+// oh-my-pi/packages/catalog/src/models.ts:81
+declare module "@oh-my-pi/pi-catalog/models" {
+	export function getEffectiveTokenCost(cost: unknown, timestamp?: number): { readonly input: number };
+}
+
+// oh-my-pi/packages/coding-agent/src/internal-urls/local-protocol.ts:28,296
+declare module "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol" {
+	export interface LocalProtocolOptions {
+		readonly getArtifactsDir?: () => string | null;
+		readonly getSessionId?: () => string | null;
+	}
+	export function resolveLocalUrlToPath(input: string, options: LocalProtocolOptions): string;
+}
+
 // oh-my-pi/packages/tui/src/components/image.ts
 declare module "@oh-my-pi/pi-tui" {
 	export interface ImageTheme {

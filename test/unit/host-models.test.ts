@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { wrapPortableCtx } from "../../src/host/base.js";
 import type { PortableTool } from "../../src/host/port.js";
-import { generateCalls, installOmpAiStub } from "../fixtures/omp-ai-stub.js";
+import { generateCalls, generateControl, installOmpAiStub, StubHttpError } from "../fixtures/omp-ai-stub.js";
 
 installOmpAiStub();
 
@@ -120,6 +120,92 @@ describe("host adapters: models come from the host registry", () => {
 			new AbortController().signal,
 		);
 		expect(missing.ok ? "ok" : missing.error.kind).toBe("model_not_found");
+	});
+
+	// Regression: every host HTTP failure surfaced as `internal`, hiding the status, and a quota cap read as retryable.
+	test("omp maps host HTTP failures: quota cap → quota_exhausted, other 4xx → provider_http with status", async () => {
+		const registry = { getAvailable: () => [googleImage], getApiKey: () => Promise.resolve("key-123") };
+		const host = new OmpHost({});
+		const run = async (): Promise<unknown> => {
+			const res = await host.generateNative(
+				ompCtx(registry),
+				{ model: "google/gemini-image", prompt: "a cat" },
+				new AbortController().signal,
+			);
+			return res.ok ? "ok" : res.error;
+		};
+		try {
+			generateControl.failWith = new StubHttpError(
+				"google/gemini-image image request failed (429): You have exhausted your capacity on this model.",
+				429,
+				new Headers({ "retry-after": "60" }),
+			);
+			expect(await run()).toMatchObject({
+				kind: "quota_exhausted",
+				provider: "google/gemini-image",
+				status: 429,
+				retryAfterMs: 60_000,
+			});
+
+			generateControl.failWith = new StubHttpError("bad request", 400);
+			expect(await run()).toMatchObject({ kind: "provider_http", status: 400, retryable: false });
+
+			generateControl.failWith = new Error("socket closed");
+			expect(await run()).toMatchObject({ kind: "internal", message: "socket closed" });
+		} finally {
+			generateControl.failWith = undefined;
+		}
+	});
+
+	test("omp hosted image models use the cheapest same-provider carrier and name it on failure", async () => {
+		generateCalls.length = 0;
+		const hostedImage = { id: "gpt-image-2", provider: "codex", api: "openai-codex-responses", kind: "image" };
+		const pricey = {
+			id: "big",
+			provider: "codex",
+			api: "openai-codex-responses",
+			hostedImage: true,
+			cost: { input: 5 },
+		};
+		const cheap = {
+			id: "mini",
+			provider: "codex",
+			api: "openai-codex-responses",
+			hostedImage: true,
+			cost: { input: 1 },
+		};
+		const registry = {
+			getAvailable: (kind?: unknown) => (kind === "all" ? [hostedImage] : [pricey, cheap]),
+			getApiKey: () => Promise.resolve("key-123"),
+		};
+		const host = new OmpHost({});
+		const req = { model: "codex/gpt-image-2", prompt: "a cat" };
+		const okRes = await host.generateNative(ompCtx(registry), req, new AbortController().signal);
+		expect(okRes.ok).toBe(true);
+		expect(generateCalls[0]?.options["carrier"]).toMatchObject({ id: "mini" });
+
+		generateControl.failWith = new StubHttpError("Tool choice 'image_generation' must be specified", 400);
+		try {
+			const failed = await host.generateNative(ompCtx(registry), req, new AbortController().signal);
+			expect(failed.ok ? "ok" : failed.error).toMatchObject({ kind: "provider_http", via: "codex/mini" });
+		} finally {
+			generateControl.failWith = undefined;
+		}
+	});
+
+	// Regression: omp pastes images as `local://pasted-image-*.png`; they were read as cwd-relative paths.
+	test("omp resolves local:// against the session artifacts dir; other schemes stay unresolved", async () => {
+		const host = new OmpHost({});
+		const ctx = wrapPortableCtx({
+			cwd: "/tmp",
+			sessionManager: { getArtifactsDir: () => "/art", getSessionId: () => "s1" },
+		});
+		const res = await host.resolveHostUrl(ctx, "local://pasted-image-ab.png");
+		expect(res.ok ? res.value : "error").toBe("/art/local/pasted-image-ab.png");
+		const other = await host.resolveHostUrl(ctx, "skill://x.png");
+		expect(other.ok ? other.value : "error").toBeUndefined();
+		const pi = await new PiHost({}).resolveHostUrl(ctx, "local://pasted-image-ab.png");
+		expect(pi.ok ? pi.value : "error").toBeUndefined();
 	});
 
 	test("omp configuredImageModel uses the session model's imageModel swap", () => {

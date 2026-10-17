@@ -1,5 +1,6 @@
 import type { ImgError } from "../core/errors.js";
 import type { Result } from "../core/result.js";
+import { ok } from "../core/result.js";
 import type {
 	ComponentLike,
 	HostImageModel,
@@ -313,6 +314,10 @@ export abstract class BaseHost implements HostPort {
 			},
 		};
 	};
+
+	public resolveHostUrl(_ctx: PortableCtx, _url: string): Promise<Result<string | undefined, ImgError>> {
+		return Promise.resolve(ok(undefined));
+	}
 
 	public logError(_msg: string, _err?: unknown): void {
 		// Default: host exposes no logger; never write to stdout (it would corrupt the TUI).
