@@ -16,6 +16,9 @@ import { TextureSpec } from "../domain/texture.js";
 import type {
 	AgentToolContentItem,
 	ComponentLike,
+	ImageBytes,
+	ImageComponentFactory,
+	ImageRenderOpts,
 	PortableCtx,
 	PortableRenderResultOpts,
 	PortableTheme,
@@ -25,10 +28,10 @@ import type {
 import type { DurationStatsStore } from "../jobs/progress.js";
 import { createThrottledEmitter } from "../jobs/progress.js";
 import type { ExecutedJobResult, PipelineDeps } from "../pipeline/run.js";
-import { renderCallCard, renderJobCard } from "../ui/components/job-card.js";
+import { renderCallCard, renderJobCard, renderNoteCard } from "../ui/components/job-card.js";
 import { formatBytes, formatCompactSeconds } from "../ui/theme.js";
 import type { SharedTicker } from "../ui/ticker.js";
-import { buildCallVM, buildJobCardVM, MemoizedComponent } from "../ui/view-models.js";
+import { buildCallVM, buildJobCardVM, buildNoteVM, MemoizedComponent } from "../ui/view-models.js";
 import type { ImgEditParams, ImgGenerateParams, ImgTextureParams, RawPostInput, RawReferenceInput } from "./schemas.js";
 
 export interface GenerateDetails {
@@ -110,6 +113,7 @@ export function buildGenerateRequest(
 		...(params.height !== undefined ? { height: params.height } : {}),
 		...(params.aspect_ratio !== undefined ? { aspectRatio: params.aspect_ratio } : {}),
 		...(params.resolution !== undefined ? { resolution: params.resolution } : {}),
+		...(params.image_size !== undefined ? { imageSize: params.image_size } : {}),
 	};
 
 	return GenerationRequest.create({
@@ -201,6 +205,7 @@ export function buildEditRequest(params: ImgEditParams, config: ImgConfig): Resu
 		...(params.height !== undefined ? { height: params.height } : {}),
 		...(params.aspect_ratio !== undefined ? { aspectRatio: params.aspect_ratio } : {}),
 		...(params.resolution !== undefined ? { resolution: params.resolution } : {}),
+		...(params.image_size !== undefined ? { imageSize: params.image_size } : {}),
 	};
 
 	return GenerationRequest.create({
@@ -318,9 +323,7 @@ export function buildGenerateDetails(state: JobState, dryRun = false): GenerateD
 export function formatJobCompletionText(execRes: ExecutedJobResult): string {
 	const { job } = execRes;
 	if (execRes.dryRun) {
-		const lines = [
-			`dry_run · ${job.modelId} · ${job.producedSize.format()} · ×${job.request.count} · est. $${execRes.estimatedCostUsd.toFixed(2)}`,
-		];
+		const lines = [`dry_run · ${job.modelId} · ${job.producedSize.format()} · ×${job.request.count}`];
 		if (job.warnings.length > 0) {
 			lines.push(`warnings: ${job.warnings.join("; ")}`);
 		}
@@ -336,8 +339,11 @@ export function formatJobCompletionText(execRes: ExecutedJobResult): string {
 		execRes.textureExtra?.seamScore !== undefined ? ` · seam score ${execRes.textureExtra.seamScore.toFixed(1)}` : "";
 
 	const lines: string[] = [
-		`generated ${count} ${noun} · ${job.modelId} · ${job.producedSize.format()} · seed ${job.request.seed} · ${formatCompactSeconds(totalMs)}${seamExtra}`,
+		`generated ${count} ${noun} · ${job.modelId} · ${job.producedSize.format()} · ${formatCompactSeconds(totalMs)}${seamExtra}`,
 	];
+	if (job.usage?.costUsd !== undefined) {
+		lines.push(`cost: $${job.usage.costUsd.toFixed(4)} (reported by host)`);
+	}
 
 	for (const art of job.artifacts) {
 		const s = art.summary;
@@ -436,10 +442,46 @@ export function createProgressReporter(onUpdate: PortableToolUpdateCallback<Gene
 	};
 }
 
+/**
+ * Card for a finished call without job state. Tone comes from the result itself:
+ * `isError` → failed; no details (abort path of `buildErrorToolResult`) → cancelled; otherwise done.
+ */
+export function noteForToolResult<D>(
+	toolName: string,
+	result: PortableToolResult<D>,
+	theme: PortableTheme,
+	text?: string,
+): ComponentLike {
+	const tone = result.isError === true ? "failed" : result.details === undefined ? "cancelled" : "done";
+	const body = text ?? (result.content[0]?.type === "text" ? result.content[0].text : toolName);
+	const vm = buildNoteVM({ toolName, tone, text: body, noColor: process.env["NO_COLOR"] !== undefined });
+	return new MemoizedComponent(vm, renderNoteCard, theme);
+}
+
+/** Vertical stack: the job card, then the inline host image. */
+function stackComponents(parts: readonly ComponentLike[]): ComponentLike {
+	return {
+		render: (width: number): string[] => parts.flatMap(p => p.render(width)),
+		invalidate: (): void => {
+			for (const p of parts) {
+				p.invalidate();
+			}
+		},
+	};
+}
+
+function firstImage(result: PortableToolResult<GenerateDetails>): ImageBytes | undefined {
+	for (const item of result.content) {
+		if (item.type === "image") {
+			return { base64: item.data, mimeType: item.mimeType };
+		}
+	}
+	return undefined;
+}
+
 export function createPortableJobRenderers<P extends Record<string, unknown>>(
 	toolName: string,
-	ticker: SharedTicker,
-	stats: DurationStatsStore,
+	deps: ToolRuntimeDeps,
 ): {
 	readonly renderCall: (args: P, theme: PortableTheme) => ComponentLike;
 	readonly renderResult: (
@@ -465,6 +507,7 @@ export function createPortableJobRenderers<P extends Record<string, unknown>>(
 				...(typeof args["model"] === "string" ? { model: args["model"] } : {}),
 				...(typeof args["width"] === "number" ? { width: args["width"] } : {}),
 				...(typeof args["height"] === "number" ? { height: args["height"] } : {}),
+				...(typeof args["aspect_ratio"] === "string" ? { aspectRatio: args["aspect_ratio"] } : {}),
 				...(typeof args["count"] === "number" ? { count: args["count"] } : {}),
 				...(typeof args["format"] === "string" ? { format: args["format"] } : {}),
 				...(typeof args["output_dir"] === "string" ? { outputDir: args["output_dir"] } : {}),
@@ -476,30 +519,32 @@ export function createPortableJobRenderers<P extends Record<string, unknown>>(
 			result: PortableToolResult<GenerateDetails>,
 			opts: PortableRenderResultOpts,
 			theme: PortableTheme,
-			args?: P,
 		): ComponentLike => {
 			const state = result.details?.state;
 			if (state === undefined) {
-				const fallbackText = result.content[0]?.type === "text" ? result.content[0].text : toolName;
-				const vm = buildCallVM({
-					toolName,
-					prompt: fallbackText,
-					...(typeof args?.["model"] === "string" ? { model: args["model"] } : {}),
-					noColor,
-				});
-				return new MemoizedComponent(vm, renderCallCard, theme);
+				return noteForToolResult(toolName, result, theme);
 			}
-			const tauMs = stats.getTauMs(state.providerId, state.modelId, state.producedSize);
+			const tauMs = deps.stats.getTauMs(state.providerId, state.modelId, state.producedSize);
 			const vm = buildJobCardVM({
 				toolName,
 				state,
 				nowMs: state.finishedAt ?? Date.now(),
-				spinnerTick: ticker.currentTick,
+				spinnerTick: deps.ticker.currentTick,
 				tauMs,
 				expanded: opts.expanded,
 				noColor,
 			});
-			return new MemoizedComponent(vm, renderJobCard, theme);
+			const card = new MemoizedComponent(vm, renderJobCard, theme);
+			const image = opts.isPartial ? undefined : firstImage(result);
+			const previewOpts = deps.previewOptions();
+			if (image === undefined || previewOpts === undefined) {
+				return card;
+			}
+			const filename = result.details?.artifacts[0]?.relativePath;
+			return stackComponents([
+				card,
+				deps.imageComponent(image, theme, { ...previewOpts, ...(filename !== undefined ? { filename } : {}) }),
+			]);
 		},
 	};
 }
@@ -508,4 +553,8 @@ export interface ToolRuntimeDeps {
 	readonly getPipelineDeps: (hostCtx: PortableCtx) => PipelineDeps;
 	readonly ticker: SharedTicker;
 	readonly stats: DurationStatsStore;
+	/** Host TUI `Image` component (text fallback when the host has none). */
+	readonly imageComponent: ImageComponentFactory;
+	/** Inline preview size from live config; `undefined` when `ui.inlinePreview` is off. */
+	readonly previewOptions: () => ImageRenderOpts | undefined;
 }

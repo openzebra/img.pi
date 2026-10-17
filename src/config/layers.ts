@@ -1,5 +1,5 @@
 import { deepFreeze } from "../core/freeze";
-import { DEFAULT_CONFIG, type ImgConfig, type PartialConfig, type ProviderConfigEntry } from "./schema";
+import { DEFAULT_CONFIG, type ImgConfig, type PartialConfig } from "./schema";
 
 export type ConfigScope = "default" | "user" | "project" | "session" | "call";
 
@@ -8,41 +8,6 @@ export interface ConfigLayerSet {
 	readonly project?: PartialConfig;
 	readonly session?: PartialConfig;
 	readonly call?: PartialConfig;
-}
-
-function mergeProviderEntry(
-	base: ProviderConfigEntry,
-	patch: Partial<ProviderConfigEntry> | undefined,
-): ProviderConfigEntry {
-	if (!patch) return base;
-	return Object.freeze({
-		enabled: patch.enabled ?? base.enabled,
-		...(patch.apiKeyEnv !== undefined
-			? { apiKeyEnv: patch.apiKeyEnv }
-			: base.apiKeyEnv !== undefined
-				? { apiKeyEnv: base.apiKeyEnv }
-				: {}),
-		...(patch.apiKeyCommand !== undefined
-			? { apiKeyCommand: patch.apiKeyCommand }
-			: base.apiKeyCommand !== undefined
-				? { apiKeyCommand: base.apiKeyCommand }
-				: {}),
-		...(patch.baseUrl !== undefined
-			? { baseUrl: patch.baseUrl }
-			: base.baseUrl !== undefined
-				? { baseUrl: base.baseUrl }
-				: {}),
-		...(patch.workflowsDir !== undefined
-			? { workflowsDir: patch.workflowsDir }
-			: base.workflowsDir !== undefined
-				? { workflowsDir: base.workflowsDir }
-				: {}),
-		...(patch.maxConcurrent !== undefined
-			? { maxConcurrent: patch.maxConcurrent }
-			: base.maxConcurrent !== undefined
-				? { maxConcurrent: base.maxConcurrent }
-				: {}),
-	});
 }
 
 export function applyPartialConfig(base: ImgConfig, patch: PartialConfig | undefined): ImgConfig {
@@ -74,14 +39,6 @@ export function applyPartialConfig(base: ImgConfig, patch: PartialConfig | undef
 			...base.aliases,
 			...(patch.aliases ?? {}),
 		},
-		providers: {
-			host: mergeProviderEntry(base.providers.host, patch.providers?.["host"]),
-			fal: mergeProviderEntry(base.providers.fal, patch.providers?.["fal"]),
-			replicate: mergeProviderEntry(base.providers.replicate, patch.providers?.["replicate"]),
-			stability: mergeProviderEntry(base.providers.stability, patch.providers?.["stability"]),
-			comfyui: mergeProviderEntry(base.providers.comfyui, patch.providers?.["comfyui"]),
-			a1111: mergeProviderEntry(base.providers.a1111, patch.providers?.["a1111"]),
-		},
 		output: {
 			dir: patch.output?.dir ?? base.output.dir,
 			textureDir: patch.output?.textureDir ?? base.output.textureDir,
@@ -105,7 +62,6 @@ export function applyPartialConfig(base: ImgConfig, patch: PartialConfig | undef
 		},
 		limits: {
 			maxBatch: patch.limits?.maxBatch ?? base.limits.maxBatch,
-			maxCostPerCallUsd: patch.limits?.maxCostPerCallUsd ?? base.limits.maxCostPerCallUsd,
 			maxPixels: patch.limits?.maxPixels ?? base.limits.maxPixels,
 		},
 		ui: {

@@ -2,21 +2,48 @@
 
 Image and PBR texture generation extension for **omp** (`@oh-my-pi/pi-coding-agent`, primary) and **pi** (`@earendil-works/pi-coding-agent`, secondary).
 
-## Features
+## How it works
 
-- **Dual-host architecture**: One package supporting both `omp` and `pi` via runtime `HostPort` detection and normalized tool renderers.
-- **6 Agent Tools**:
-   - `img_generate` — Text-to-image with up to 16 reference images, exact pixel sizing (`cover` / `contain` / `fill`), post-processing (`trim`, `remove_background`, `upscale`, `sharpen`, `grayscale`, `palette`), and deterministic `.json` sidecars.
-   - `img_edit` — Image-to-image, masked inpaint, 4-direction outpaint, and variations using file paths, URLs, `data:` URIs, or `@last` / `@job:<id>[#n]` references.
-   - `img_texture` — Seamless tileable PBR material pipeline generating `albedo`, `normal` (OpenGL/DirectX Sobel 3×3), `height`, `roughness`, `ao` (multi-scale horizon occlusion), `metallic`, packed `orm`, a 2×2 tiled preview PNG, and a glTF 2.0 `material.json`.
-   - `img_variations` — Batch sweeps across `seeds`, `prompts`, `models`, and `styles` (`cartesian` or `zip` up to `limits.maxBatch = 32`) with an automatic labeled contact sheet.
-   - `img_list_models` — Live catalog of host-native and direct provider models with capabilities, size rules, key status (`✓`/`✗`/`⌂`), and cost hints.
-   - `img_describe_job` — Full sidecar JSON lookup for `@last` or any job ID prefix so generations can be reproduced or tweaked.
-- **Interactive TUI Studio (`/img` or `Ctrl+Alt+I`)**:
-   - 5-tab full-screen overlay: **1 Compose**, **2 Gallery**, **3 Queue**, **4 Compare A/B**, and **5 Settings** (`user` / `project` scopes with provenance badges).
-   - Live tool-call cards with 5-phase progress bar, EWMA ETA, and inline terminal thumbnails (`Image` component with `ImageBudget` eviction and half-block/text fallbacks).
-   - Persistent queue widget above the editor and status-line segment.
-- **Off-main-thread Worker Pool**: All heavy image decoding, resizing, Sobel normal synthesis, multi-band seamless blending, AO, ORM packing, and >1 MB manifest parsing run in worker threads (`src/workers/image.worker.ts`) with zero-copy `ArrayBuffer` transfers.
+Open omp or pi and ask for a picture: _"draw me a ginger cat on a windowsill"_. The agent calls `img_generate` itself, using an image model from a provider you have already connected in the host (`/login`). The image is saved under `.pi/img/images/` and shown inline in the TUI. There is nothing to configure and no command to run.
+
+- **Models come from the host.** If you have only Google connected, only Google image models are used and listed; there is no built-in model list, and no API keys are read by this extension. Ask the agent _"which image models do I have?"_ to see them (`img_list_models`).
+- **Cost** is shown only when the host reports it.
+
+## Tools (called by the agent)
+
+- `img_generate`: text to image, with optional references, sizing, post-processing (`trim`, `remove_background`, `upscale`, `sharpen`, `grayscale`, `palette`) and a reproducible `.json` sidecar.
+- `img_edit`: change an existing image (`@last`, `@job:<id>[#n]`, a path or a URL), including masked inpaint and outpaint. Needs a model that accepts input images.
+- `img_texture`: seamless PBR material set (`albedo`, `normal`, `height`, `roughness`, `ao`, `metallic`, `orm`), a 2×2 tile preview and a glTF `material.json`.
+- `img_variations`: batch sweeps over seeds, prompts, models and styles, with a labeled contact sheet.
+- `img_list_models`: the image models available in this session, grouped by provider, with the default marked.
+- `img_describe_job`: the full sidecar for `@last` or a job id, to reproduce or tweak a result.
+
+`img_generate` and `img_edit` are always visible to the agent. With `compat.hideBuiltin` (default `true`), omp's built-in `generate_image` is hidden so there is one obvious image tool.
+
+## Studio (`/img`)
+
+`/img` opens an overlay for looking and configuring. It never generates; that is the agent's job.
+
+| Tab      | What you can do                                                                                                                                                                    |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Models   | See the image models your host connections provide, grouped by provider; `enter` makes one the default (or `auto`).                                                                |
+| Settings | Cycle format, preview, outside-project saving, HUD, parallel jobs…; each change is saved to `img-pi.json` at once. The first row picks the file: this project or your user config. |
+| Gallery  | Browse generated images, newest first, with an inline preview.                                                                                                                     |
+
+Keys: `←/→` or `tab` switch tabs, `↑/↓` move, `enter`/`space` select, `esc`/`q` close.
+
+## Where files go
+
+Everything is written under `<project>/.pi/img/` on both hosts:
+
+| Path                        | Contents                               |
+| --------------------------- | -------------------------------------- |
+| `.pi/img/images/`           | Generated and edited images + sidecars |
+| `.pi/img/textures/`         | Texture sets                           |
+| `.pi/img/manifest.jsonl`    | One line per artifact                  |
+| `.pi/img/failed/<job>.json` | Request of a failed job, for retrying  |
+
+Heavy image work (decode, resize, normal/AO synthesis, seam blending, large manifest parsing) runs in worker threads.
 
 ---
 
@@ -51,30 +78,15 @@ bun run link:pi
 
 ---
 
-## Provider Configuration & Environment Variables
+## Configuration (optional)
 
-| Provider              | Default Status                               | API Key Env Var / Endpoint                                                                        | Example Models                                                                                  |
-| --------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `host` (`omp` / `pi`) | Enabled                                      | Reuses `ctx.modelRegistry.getApiKey()` (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`) | `openai/gpt-image-1`, `google/gemini-2.5-flash-image-preview`, `google/imagen-3.0-generate-002` |
-| `fal`                 | Enabled                                      | `FAL_KEY`                                                                                         | `fal/flux-schnell`, `fal/flux-dev`, `fal/flux-pro-v1.1`, `fal/recraft-v3`                       |
-| `replicate`           | Opt-in (`providers.replicate.enabled: true`) | `REPLICATE_API_TOKEN`                                                                             | `replicate/black-forest-labs/flux-schnell`, any `replicate/<owner>/<name>`                      |
-| `stability`           | Opt-in (`providers.stability.enabled: true`) | `STABILITY_API_KEY`                                                                               | `stability/sd3.5-large`, `stability/ultra`, `stability/core`                                    |
-| `comfyui`             | Opt-in (`providers.comfyui.enabled: true`)   | `http://127.0.0.1:8188`                                                                           | `comfyui/sdxl-pbr`, custom workflow JSONs                                                       |
-| `a1111`               | Opt-in (`providers.a1111.enabled: true`)     | `http://127.0.0.1:7860`                                                                           | `a1111/default` (`tiling: true` native seamless)                                                |
-| `mock`                | Always available                             | Local / deterministic                                                                             | `mock/gradient`, `mock/solid`                                                                   |
+`img-pi.json` in `~/.omp/agent/` or `~/.pi/agent/` (user), or in `<project>/.omp/` / `<project>/.pi/` (project). Common keys:
 
----
+- `defaults.model`: preferred model id from `img_list_models` (default `"auto"`: the host session's image model, otherwise the first available).
+- `aliases`: your own short names for model ids.
+- `output.*`, `textures.*`, `queue.maxConcurrent`, `ui.*` (status segment, queue widget, inline preview size).
 
-## Slash Commands & Shortcuts
-
-| Command / Key         | Description                                                                       |
-| --------------------- | --------------------------------------------------------------------------------- |
-| `/img [prompt]`       | Open the Studio overlay on Tab 1 (**Compose**), prefilling the prompt if provided |
-| `/img:gallery [#tag]` | Open Studio on Tab 2 (**Gallery**), optionally filtered by `#tag` or query        |
-| `/img:queue`          | Open Studio on Tab 3 (**Queue**) to inspect, pause, or cancel jobs                |
-| `/img:settings`       | Open Studio on Tab 5 (**Settings**) to edit user or project config                |
-| `/img:model [id]`     | Switch the session default image model directly or via interactive selector       |
-| `Ctrl+Alt+I`          | Toggle the Studio overlay from anywhere in the TUI                                |
+`--img-model <id>` sets the model for one session.
 
 ---
 

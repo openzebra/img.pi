@@ -1,4 +1,4 @@
-import { formatImgError, fromUnknownError } from "../core/errors.js";
+import { formatImgError, fromUnknownError, noImageModels } from "../core/errors.js";
 import { tryAsync } from "../core/result.js";
 import type {
 	ComponentLike,
@@ -12,61 +12,39 @@ import type {
 import type { ProviderModel } from "../providers/port.js";
 import type { ResolvedModelEntry } from "../providers/registry.js";
 import { renderCallCard } from "../ui/components/job-card.js";
-import { getGlyphs } from "../ui/glyphs.js";
 import { buildCallVM, MemoizedComponent } from "../ui/view-models.js";
 import type { ToolRuntimeDeps } from "./result.js";
+import { noteForToolResult } from "./result.js";
 import type { ImgListModelsParams } from "./schemas.js";
 import { IMG_LIST_MODELS_SCHEMA } from "./schemas.js";
 
 export const IMG_LIST_MODELS_DESCRIPTION =
-	"List available image and texture generation models across host-native and direct providers with capabilities, sizes, key status, and cost hints. " +
-	"Examples: (1) Photo models: {capability:'txt2img'} (2) Seamless texture models: {capability:'native_tiling'}.";
+	"List the image generation models available in this session. They come from the providers the user has " +
+	"connected in the host, so only usable models appear. The entry marked 'default' is used when no model is given. " +
+	"Example: {capability:'img2img'} lists models that can edit images.";
 
 export interface ListModelsDetails {
 	readonly models: readonly ProviderModel[];
+	readonly defaultModelId?: string;
 }
 
-export function formatModelsTable(entries: readonly ResolvedModelEntry[], noColor = false): string {
+function capabilityLabel(m: ProviderModel): string {
+	return m.caps.has("img2img") ? "generate + edit" : "generate";
+}
+
+export function formatModelsTable(entries: readonly ResolvedModelEntry[], defaultModelId: string | undefined): string {
 	if (entries.length === 0) {
-		return "No matching image generation models found.";
+		return formatImgError(noImageModels());
 	}
-	const g = getGlyphs(noColor);
-	const lines: string[] = [
-		`Found ${entries.length} model(s) [key: ${g.check}=ready ${g.cross}=missing ${g.home}=local]:`,
-	];
-	for (const entry of entries) {
-		const m = entry.model;
-		const isLocal = m.provider === "comfyui" || m.provider === "a1111" || m.provider === "mock";
-		const keyGlyph = isLocal ? g.home : m.hasKey !== false ? g.check : g.cross;
-		const capsList = Array.from(m.caps).join(",");
-		const sizesRule = m.sizes;
-		let sizesStr: string;
-		switch (sizesRule.kind) {
-			case "fixed":
-				sizesStr = sizesRule.sizes.map(s => `${s.width}×${s.height}`).join(",");
-				break;
-			case "multiple":
-				sizesStr = `${sizesRule.min}..${sizesRule.max} (step ${sizesRule.step})`;
-				break;
-			case "aspects":
-				sizesStr = `aspects:${sizesRule.aspects.join(",")} tiers:${(sizesRule.resolutions ?? ["1K"]).join(",")}`;
-				break;
-			case "range":
-				sizesStr = `${sizesRule.min}..${sizesRule.max}`;
-				break;
-			case "any":
-				sizesStr = `${sizesRule.min ?? 64}..${sizesRule.max ?? 8192}`;
-				break;
-			default: {
-				const _exhaustive: never = sizesRule;
-				sizesStr = String(_exhaustive);
-			}
+	const lines = [`Image models available (${entries.length}):`];
+	let currentProvider: string | undefined;
+	for (const { model } of entries) {
+		if (model.providerLabel !== currentProvider) {
+			currentProvider = model.providerLabel;
+			lines.push(currentProvider);
 		}
-		const costStr =
-			m.costHint ?? (m.costPerImageUsd !== undefined ? `$${m.costPerImageUsd.toFixed(3)}/img` : "host/local");
-		lines.push(
-			`- ${keyGlyph} ${m.id} (${m.provider}) · cost: ${costStr} · sizes: [${sizesStr}] · caps: {${capsList}}`,
-		);
+		const marker = model.id === defaultModelId ? "  ← default" : "";
+		lines.push(`  - ${model.id} · ${model.label} · ${capabilityLabel(model)}${marker}`);
 	}
 	return lines.join("\n");
 }
@@ -77,6 +55,7 @@ export function createImgListModelsTool(deps: ToolRuntimeDeps): PortableTool<Img
 	return {
 		name: "img_list_models",
 		label: "List Image Models",
+		approval: "read",
 		description: IMG_LIST_MODELS_DESCRIPTION,
 		parameters: IMG_LIST_MODELS_SCHEMA.jsonSchema,
 		async execute(
@@ -106,11 +85,13 @@ export function createImgListModelsTool(deps: ToolRuntimeDeps): PortableTool<Img
 							isError: true,
 						});
 					}
-					const text = formatModelsTable(listRes.value, noColor);
+					const defaultRes = await pDeps.registry.resolveModel(undefined, pDeps);
+					const defaultModelId = defaultRes.ok ? defaultRes.value.model.id : undefined;
+					const text = formatModelsTable(listRes.value, defaultModelId);
 					const models = Object.freeze(listRes.value.map(e => e.model));
 					return Object.freeze({
 						content: Object.freeze([{ type: "text" as const, text }]),
-						details: Object.freeze({ models }),
+						details: Object.freeze({ models, ...(defaultModelId !== undefined ? { defaultModelId } : {}) }),
 						isError: false,
 					});
 				},
@@ -144,13 +125,7 @@ export function createImgListModelsTool(deps: ToolRuntimeDeps): PortableTool<Img
 			_opts: PortableRenderResultOpts,
 			theme: PortableTheme,
 		): ComponentLike {
-			const count = result.details?.models.length ?? 0;
-			const vm = buildCallVM({
-				toolName: "img_list_models",
-				prompt: `${count} models available`,
-				noColor,
-			});
-			return new MemoizedComponent(vm, renderCallCard, theme);
+			return noteForToolResult("img_list_models", result, theme);
 		},
 	};
 }

@@ -7,6 +7,23 @@ Rules are **MUST** unless marked otherwise. A violation blocks merge. `bun run c
 
 ---
 
+## 0. Harness first: the host is the source of truth
+
+The product is: the user says "draw me a cat" in omp/pi, the agent calls `img_generate` itself, and the image lands in `.pi/img`. Every rule below serves that.
+
+- **Generation is agent-driven.** No slash command, shortcut, or overlay ever generates an image. The user surface is a passive HUD (status segment, queue widget) and `/img` Studio (`src/commands/img.ts`) for looking and configuring only: Models (pick the default from host models), Settings (writes `img-pi.json` via `ConfigStore.patchScope`), Gallery (manifest + host `Image` preview). Do not add generate/compose UI or more commands without an explicit product decision.
+- **Studio keys come from the host.** Use `host.parseKey` (host TUI `parseKey`) and `keyToAction` in `src/ui/studio-state.ts`; never parse escape sequences by hand. Settings rows are declared once in `src/ui/settings-fields.ts` (typed read/patch per key); add a setting there, nowhere else.
+- **Agent-facing tools must be visible.** `img_generate` and `img_edit` set `essential: true` and `approval` (→ omp `loadMode: "essential"`, `oh-my-pi/packages/coding-agent/src/tools/essential-tools.ts:45`; extension tools are otherwise _discoverable_ and hidden from the top-level list) and `promptSnippet` / `promptGuidelines` (→ pi, which omits custom tools from "Available tools" without a snippet, `pi/packages/coding-agent/src/core/extensions/types.ts:587`). Descriptions tell the agent _when_ to call the tool. `test/e2e/*` asserts this.
+- **Ask the host, never hardcode.** Model lists, display names, credentials, capabilities, request knobs, and prices come from the host API:
+   - omp: `ctx.modelRegistry.getAvailable("all")` filtered by `kind === "image"` and `isImageGenerationApi(api)`; generate with `generateImage()` + `getApiKey`/`resolver`/`resolveModelHeaders` (mirror `oh-my-pi/packages/coding-agent/src/tools/image-gen.ts`).
+   - pi: `ctx.modelRegistry.getAvailableOfType("image")` and `ctx.modelRegistry.generateImages()` (request-time auth).
+   - Capabilities derive from the host model's `input` modalities; request knobs from the host transport (`HostImageOptions`).
+- **Forbidden in `src/`:** model-ID tables, default/fallback model lists, env-var key lookups for host providers (`OPENAI_API_KEY`, …), cost/price literals (`"$0.04"`, `?? 0.04`), per-provider limit tables, and branching on provider or model name strings (`provider.startsWith("openai")`, `id.includes("imagen")`). If a fact is not available from the host, it stays absent; do not invent a default.
+- **No catch-all flags.** No `hasKey`-style booleans or `provider === "mock"` checks: if a model is not usable, the host does not list it, so neither do we. Test doubles (`FakeHost`, the `@oh-my-pi/pi-ai` stub, PNG fixtures) live in `test/fixtures/` and are never registered at runtime.
+- **No magic.** Every non-obvious literal is a named frozen constant with a one-line "why" (and a host `file:line` when it mirrors a host fact).
+- **Cost is reported, never estimated.** Show `usage.cost` only when the host returns it.
+- **Artifacts live in `<cwd>/.pi/img`** on both hosts (`images/`, `textures/`, `manifest.jsonl`, `failed/`). Use `ARTIFACT_PATHS` / `failedRequestRelPath` from `src/domain/artifact-paths.ts`; no path string literals elsewhere.
+
 ## 1. DRY: absolute
 
 - Never copy/paste logic. When a second use appears, extract it first, then use it twice.
@@ -19,7 +36,9 @@ Rules are **MUST** unless marked otherwise. A violation blocks merge. `bun run c
    - Host differences → `src/host/*` only. No `if (host.kind === …)` outside `src/host/`.
    - Renderer signature differences → `src/host/render-shim.ts` only.
    - Colors/glyphs → `src/ui/theme.ts`, `src/ui/glyphs.ts`.
-- Reuse host APIs; do not re-implement them: image calls for OpenAI/Google/OpenRouter go through `@oh-my-pi/pi-ai/images` `generateImage()` / `@earendil-works/pi-ai` `generateImages()`. Terminal images go through the host `Image` component. API keys come from `ctx.modelRegistry.getApiKey()`.
+   - Shared host-adapter logic → `src/host/base.ts` (`BaseHost`); `omp.ts` / `pi.ts` contain only real host differences.
+   - Artifact paths → `src/domain/artifact-paths.ts`.
+- Reuse host APIs; do not re-implement them (§0): models, auth, and generation go through the host model registry and `generateImage()` / `generateImages()`. There are no direct provider adapters. Terminal images go through the host `Image` component (`host.imageComponent`).
 - Duplicate string literals used ≥2 times become a frozen constant.
 
 ## 2. Types: strict, no dynamic types
@@ -103,7 +122,7 @@ Allowed import direction: `host → app (wire, tools, commands, ui) → services
 
 ## 12. Security / IO
 
-- Output paths: resolve against `ctx.cwd`. Outside-cwd writes require `output.allowOutsideCwd`. Never write into `.git/`, `node_modules/`, or host config dirs (except `.img-pi/`).
+- Output paths: resolve against `ctx.cwd`. Outside-cwd writes require `output.allowOutsideCwd`. Never write into `.git/`, `node_modules/`, or host config dirs (`.omp/`, `.pi/`), except img.pi's own `.pi/img/`.
 - Atomic writes (tmp + fsync + rename).
 - Secrets: never logged, never written to config/sidecar/manifest. Errors name the env var only.
 - Reference URLs: http(s) only, 30 s timeout, 50 MB cap, content-type must be `image/*`.
@@ -118,8 +137,9 @@ Allowed import direction: `host → app (wire, tools, commands, ui) → services
 
 ## 14. Change protocol for agents
 
-1. Read `/tmp/img-pi-PLAN.md` and the referenced host files before touching host-facing code. Do not guess host APIs; cite file:line in the PR description.
+1. Read `/tmp/img-pi-PLAN.md` and the referenced host sources (`~/projects/zebra/oh-my-pi`, `~/projects/zebra/pi`) before touching host-facing code. Do not guess host APIs; cite file:line in code comments for mirrored facts and in the PR description.
 2. Search for existing helpers before writing new ones (`rg` in `src/`). DRY check is part of review.
 3. Keep diffs focused. No drive-by refactors mixed with features.
 4. Run `bun run check`. Zero warnings.
 5. Update the plan's milestone table and open questions when a decision changes.
+6. Before finishing, run the §0 audit: `rg -n 'costHint|costPerImageUsd|hasKey|"mock"|startsWith\("openai|DEFAULT_\w*IMAGE_MODELS|_API_KEY|\.img-pi' src` must return nothing.

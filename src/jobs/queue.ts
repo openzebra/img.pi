@@ -3,7 +3,6 @@ import type { ImgError } from "../core/errors.js";
 import { abortedError, internalError, timeoutError } from "../core/errors.js";
 import type { Disposer, Listener } from "../core/events.js";
 import { TypedEmitter } from "../core/events.js";
-import { deepFreeze } from "../core/freeze.js";
 import { newJobId } from "../core/ids.js";
 import type { Result } from "../core/result.js";
 import { err, ok } from "../core/result.js";
@@ -11,19 +10,6 @@ import type { JobEvent, JobState } from "../domain/job.js";
 import { createInitialJobState, isTerminalPhase, reduceJob } from "../domain/job.js";
 import type { GenerationRequest } from "../domain/request.js";
 import type { Size } from "../domain/size.js";
-
-const DEFAULT_PROVIDER_LIMITS: Readonly<Record<string, number>> = deepFreeze({
-	openai: 2,
-	google: 2,
-	openrouter: 2,
-	host: 2,
-	fal: 4,
-	replicate: 2,
-	stability: 2,
-	comfyui: 1,
-	a1111: 1,
-	mock: 8,
-});
 
 const MAX_HISTORY_JOBS = 100;
 
@@ -71,8 +57,6 @@ interface InternalJobRecord {
 
 export class JobQueue {
 	private maxConcurrent: number;
-	private readonly providerLimits = new Map<string, number>();
-	private readonly runningByProvider = new Map<string, number>();
 	private runningTotal = 0;
 	private paused = false;
 	private lastFinishedAt: number | undefined;
@@ -87,9 +71,6 @@ export class JobQueue {
 
 	public constructor(config?: ImgConfig) {
 		this.maxConcurrent = config?.queue.maxConcurrent ?? 2;
-		for (const [k, v] of Object.entries(DEFAULT_PROVIDER_LIMITS)) {
-			this.providerLimits.set(k, v);
-		}
 		if (config !== undefined) {
 			this.applyConfig(config);
 		}
@@ -97,12 +78,6 @@ export class JobQueue {
 
 	public applyConfig(config: ImgConfig): void {
 		this.maxConcurrent = Math.max(1, config.queue.maxConcurrent);
-		const providersRec: Readonly<Record<string, { readonly maxConcurrent?: number } | undefined>> = config.providers;
-		for (const [provId, entry] of Object.entries(providersRec)) {
-			if (entry?.maxConcurrent !== undefined && entry.maxConcurrent >= 1) {
-				this.providerLimits.set(provId, entry.maxConcurrent);
-			}
-		}
 		this.pump();
 	}
 
@@ -318,39 +293,16 @@ export class JobQueue {
 		this.jobEventEmitter.clear();
 	}
 
-	private getProviderLimit(providerId: string): number {
-		return this.providerLimits.get(providerId) ?? 2;
-	}
-
-	private canStartJob(record: InternalJobRecord): boolean {
-		if (this.paused) {
-			return false;
-		}
-		if (this.runningTotal >= this.maxConcurrent) {
-			return false;
-		}
-		const provCount = this.runningByProvider.get(record.spec.providerId) ?? 0;
-		const provLimit = this.getProviderLimit(record.spec.providerId);
-		return provCount < provLimit;
-	}
-
 	private pump(): void {
 		if (this.paused || this.pendingQueue.length === 0) {
 			return;
 		}
 
-		let idx = 0;
-		while (idx < this.pendingQueue.length && this.runningTotal < this.maxConcurrent) {
-			const candidate = this.pendingQueue[idx];
+		while (this.runningTotal < this.maxConcurrent) {
+			const candidate = this.pendingQueue.shift();
 			if (candidate === undefined) {
-				idx++;
-				continue;
+				break;
 			}
-			if (!this.canStartJob(candidate)) {
-				idx++;
-				continue;
-			}
-			this.pendingQueue.splice(idx, 1);
 			this.recomputeQueuePositions();
 			void this.startRecord(candidate);
 		}
@@ -369,9 +321,7 @@ export class JobQueue {
 	}
 
 	private async startRecord(record: InternalJobRecord): Promise<void> {
-		const provId = record.spec.providerId;
 		this.runningTotal++;
-		this.runningByProvider.set(provId, (this.runningByProvider.get(provId) ?? 0) + 1);
 
 		const startEv: JobEvent = { t: "start", at: Date.now() };
 		this.applyJobEvent(record, startEv);
@@ -443,12 +393,6 @@ export class JobQueue {
 			delete record.cleanupSignalListener;
 
 			this.runningTotal = Math.max(0, this.runningTotal - 1);
-			const prevProv = this.runningByProvider.get(provId) ?? 1;
-			if (prevProv <= 1) {
-				this.runningByProvider.delete(provId);
-			} else {
-				this.runningByProvider.set(provId, prevProv - 1);
-			}
 			this.lastFinishedAt = Date.now();
 			this.emitSnapshot();
 

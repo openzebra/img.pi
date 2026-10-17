@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { configInvalid, fromUnknownError, type ImgError } from "../core/errors";
+import { type Disposer, TypedEmitter } from "../core/events";
 import { err, ok, type Result, tryAsync } from "../core/result";
 import { type ConfigLayerSet, resolveConfigLayers } from "./layers";
 import { migrateConfig } from "./migrate";
@@ -61,9 +62,24 @@ async function atomicWriteJson(filePath: string, data: unknown): Promise<Result<
 	);
 }
 
+function isPlainRecord(v: unknown): v is Readonly<Record<string, unknown>> {
+	return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Deep merge of JSON-shaped records; arrays and scalars in `patch` replace. */
+function mergeRecords(base: object, patch: object): Record<string, unknown> {
+	const out: Record<string, unknown> = Object.fromEntries(Object.entries(base));
+	for (const [key, value] of Object.entries(patch)) {
+		const prev = out[key];
+		out[key] = isPlainRecord(prev) && isPlainRecord(value) ? mergeRecords(prev, value) : value;
+	}
+	return out;
+}
+
 export class ConfigStore {
 	readonly #agentDir: string;
 	readonly #projectDirName: ".omp" | ".pi";
+	readonly #changeEmitter = new TypedEmitter<ImgConfig>();
 	#cwd: string;
 	#userLayer: PartialConfig | undefined;
 	#projectLayer: PartialConfig | undefined;
@@ -77,6 +93,10 @@ export class ConfigStore {
 		this.#agentDir = opts.agentDir;
 		this.#cwd = opts.cwd;
 		this.#projectDirName = opts.projectDirName;
+	}
+
+	public onChange(fn: (cfg: ImgConfig) => void): Disposer {
+		return this.#changeEmitter.on(fn);
 	}
 
 	public setCwd(cwd: string): void {
@@ -96,7 +116,9 @@ export class ConfigStore {
 
 		this.#userLayer = userRes.value;
 		this.#projectLayer = projRes.value;
-		return ok(this.getEffective());
+		const eff = this.getEffective();
+		this.#changeEmitter.emit(eff);
+		return ok(eff);
 	}
 
 	public getLayers(callLayer?: PartialConfig): ConfigLayerSet {
@@ -120,7 +142,9 @@ export class ConfigStore {
 		} else {
 			this.#sessionLayer = undefined;
 		}
-		return ok(this.getEffective());
+		const eff = this.getEffective();
+		this.#changeEmitter.emit(eff);
+		return ok(eff);
 	}
 
 	public setScopeLayer(scope: "user" | "project", patch: PartialConfig | undefined): Result<ImgConfig, ImgError> {
@@ -139,7 +163,17 @@ export class ConfigStore {
 				this.#projectLayer = undefined;
 			}
 		}
-		return ok(this.getEffective());
+		const eff = this.getEffective();
+		this.#changeEmitter.emit(eff);
+		return ok(eff);
+	}
+
+	/** Merge `patch` into the scope's file (keeping its other keys), validate, and save atomically. */
+	public async patchScope(scope: "user" | "project", patch: PartialConfig): Promise<Result<ImgConfig, ImgError>> {
+		const current = scope === "user" ? this.#userLayer : this.#projectLayer;
+		const merged = validatePartialConfig(mergeRecords(current ?? {}, patch));
+		if (!merged.ok) return merged;
+		return this.saveScope(scope, merged.value);
 	}
 
 	public async saveScope(scope: "user" | "project", config: PartialConfig): Promise<Result<ImgConfig, ImgError>> {
@@ -155,6 +189,8 @@ export class ConfigStore {
 		} else {
 			this.#projectLayer = validated.value;
 		}
-		return ok(this.getEffective());
+		const eff = this.getEffective();
+		this.#changeEmitter.emit(eff);
+		return ok(eff);
 	}
 }

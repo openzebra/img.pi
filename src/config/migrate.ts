@@ -2,14 +2,32 @@ import { configInvalid, type ImgError } from "../core/errors";
 import { err, type Result } from "../core/result";
 import { type PartialConfig, validatePartialConfig } from "./schema";
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+	return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Sections removed when models and credentials moved to the host: direct-provider
+ * entries and the estimate-based cost limit. Dropped silently so old files keep loading.
+ */
+function stripRemovedKeys(input: Record<string, unknown>): Record<string, unknown> {
+	const { providers: _providers, ...rest } = input;
+	const limits = rest["limits"];
+	if (isRecord(limits)) {
+		const { maxCostPerCallUsd: _maxCost, ...keptLimits } = limits;
+		return { ...rest, limits: keptLimits };
+	}
+	return rest;
+}
+
 /**
  * Migrate legacy / v0 configuration payloads to v1 PartialConfig (§8.1, §12).
  */
 export function migrateConfig(raw: unknown): Result<PartialConfig, ImgError> {
-	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+	if (!isRecord(raw)) {
 		return err(configInvalid("root", "Config must be a JSON object"));
 	}
-	const input = raw as Record<string, unknown>;
+	const input = stripRemovedKeys(raw);
 	const version = input["version"];
 
 	if (version !== undefined && version !== 0 && version !== 1) {
@@ -51,16 +69,7 @@ export function migrateConfig(raw: unknown): Result<PartialConfig, ImgError> {
 	if (Object.keys(output).length > 0) migrated["output"] = output;
 	if (Object.keys(queue).length > 0) migrated["queue"] = queue;
 
-	const copySections = [
-		"aliases",
-		"providers",
-		"textures",
-		"limits",
-		"ui",
-		"presets",
-		"integrations",
-		"compat",
-	] as const;
+	const copySections = ["aliases", "textures", "limits", "ui", "presets", "integrations", "compat"] as const;
 	for (const key of copySections) {
 		if (key in input) {
 			migrated[key] = input[key];

@@ -3,7 +3,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DEFAULT_CONFIG } from "../../src/config/schema.js";
-import { providerHttp } from "../../src/core/errors.js";
+import { abortedError, providerHttp, workerFailed } from "../../src/core/errors.js";
+import { buildErrorToolResult, noteForToolResult } from "../../src/tools/result.js";
 import { ok } from "../../src/core/result.js";
 import type { SidecarDocument } from "../../src/domain/artifact.js";
 import { Artifact, SIDECAR_SCHEMA_VERSION } from "../../src/domain/artifact.js";
@@ -15,27 +16,14 @@ import { Size } from "../../src/domain/size.js";
 import { computeJobProgress, createThrottledEmitter, DurationStatsStore } from "../../src/jobs/progress.js";
 import { JobQueue } from "../../src/jobs/queue.js";
 import { renderCallCard, renderJobCard } from "../../src/ui/components/job-card.js";
-import { renderKeyHints } from "../../src/ui/components/key-hints.js";
-import { renderPbrGrid } from "../../src/ui/components/pbr-grid.js";
 import { renderQueueWidget } from "../../src/ui/components/queue-widget.js";
-import { renderTilePreview } from "../../src/ui/components/tile-preview.js";
-import { renderStudioScreen } from "../../src/ui/screens/studio.js";
 import { PLAIN_THEME } from "../../src/ui/theme.js";
 import { SharedTicker } from "../../src/ui/ticker.js";
 import {
 	buildCallVM,
-	buildCompareVM,
-	buildComposeVM,
-	buildGalleryVM,
 	buildJobCardVM,
-	buildModelPickerVM,
-	buildPbrGridVM,
-	buildQueueTabVM,
 	buildQueueWidgetVM,
-	buildSettingsVM,
 	buildStatusSegmentVM,
-	buildStudioVM,
-	buildTilePreviewVM,
 	MemoizedComponent,
 } from "../../src/ui/view-models.js";
 
@@ -67,7 +55,7 @@ function makeSampleRequest(): GenerationRequest {
 	return reqRes.value;
 }
 
-describe("ui/view-models, components, screens, ticker, progress, and queue", () => {
+describe("ui/view-models, components, ticker, progress, and queue", () => {
 	test("MemoizedComponent caches render(width) by (vm.hash, width) and invalidates", () => {
 		let renderCount = 0;
 		const vm1 = buildCallVM({
@@ -263,7 +251,7 @@ describe("ui/view-models, components, screens, ticker, progress, and queue", () 
 		});
 		const de80 = renderJobCard(doneExpandedVm, 80, PLAIN_THEME);
 		expect(de80.join("\n")).toContain("sidecar");
-		expect(de80.join("\n")).toContain("manifest .img-pi/manifest.jsonl");
+		expect(de80.join("\n")).toContain("manifest .pi/img/manifest.jsonl");
 
 		// 6. Failed + NO_COLOR
 		let failedState = createInitialJobState({
@@ -290,147 +278,55 @@ describe("ui/view-models, components, screens, ticker, progress, and queue", () 
 		const f80 = renderJobCard(failedVm, 80, PLAIN_THEME);
 		expect(f80.join("\n")).toContain("[x] img_generate");
 		expect(f80.join("\n")).toContain("provider_http 429");
-		expect(f80.join("\n")).toContain("r retry");
+		expect(f80.join("\n")).toContain("transient provider error; ask to retry");
+		expect(f80.join("\n")).toContain(`request saved: .pi/img/failed/${failedState.id}.json`);
+		expect(f80.join("\n")).not.toMatch(/\/img:|r retry/);
 	});
 
-	test("Studio screens (Compose, Gallery, Queue, Compare, Settings) and modals render cleanly", () => {
-		const queue = new JobQueue(DEFAULT_CONFIG);
-		const snap = queue.snapshot();
+	test("cards: call card shows only given params; stateless failure/cancel render as failed/cancelled, never queued", () => {
+		const call = renderCallCard(
+			buildCallVM({ toolName: "img_generate", prompt: "a cat", aspectRatio: "3:2", noColor: true }),
+			100,
+			PLAIN_THEME,
+		).join("\n");
+		expect(call).toContain('"a cat"');
+		expect(call).toContain("3:2");
+		expect(call).not.toMatch(/queued #|esc cancel|auto/);
 
-		const composeVm = buildComposeVM({
-			prompt: "mossy cobblestone path, wet, moss in cracks",
-			negativePrompt: "blurry, text, watermark",
-			model: "fal/flux-pro-v1.1",
-			keyEnvHint: "FAL_KEY",
-			hasKey: true,
-			mode: "texture",
-			width: 1024,
-			height: 1024,
-			aspectRatio: "1:1",
-			resolution: "1K",
-			sizeMode: "exact",
-			count: 2,
-			seed: "random",
-			seedLocked: true,
-			steps: 28,
-			guidance: 3.5,
-			style: "pbr-texture",
-			maps: ["albedo", "normal", "roughness", "ao", "height"],
-			normalConvention: "opengl",
-			normalStrength: 2.0,
-			tileable: true,
-			refs: [{ source: "refs/stone.jpg", role: "style", weight: 0.8 }],
-			outputTemplate: "generated/textures/{slug}_{map}.png",
-			focusedFieldIndex: 0,
-			estCostUsd: 0.08,
-			estTimeSec: 11,
-		});
+		const failed = buildErrorToolResult(workerFailed("decode_b64", "Cannot find module 'image.worker.js'"));
+		const failedCard = noteForToolResult("img_generate", failed, PLAIN_THEME).render(100).join("\n");
+		expect(failedCard).toContain("worker_failed (decode_b64): Cannot find module 'image.worker.js'");
+		expect(failedCard).not.toMatch(/queued|esc cancel/);
 
-		const galleryVm = buildGalleryVM({
-			entries: [],
-			filter: "#stone",
-			selectedIndex: 0,
-		});
+		const cancelled = noteForToolResult("img_generate", buildErrorToolResult(abortedError()), PLAIN_THEME);
+		expect(cancelled.render(100).join("\n")).toContain("cancelled");
 
-		const queueTabVm = buildQueueTabVM({
-			snapshot: snap,
-			selectedIndex: 0,
-			nowMs: 5000,
-			spinnerTick: 1,
-		});
+		const widget = renderQueueWidget(
+			buildQueueWidgetVM({
+				snapshot: new JobQueue(DEFAULT_CONFIG).snapshot(),
+				nowMs: 0,
+				spinnerTick: 0,
+				noColor: true,
+			}),
+			80,
+			PLAIN_THEME,
+		).join("\n");
+		expect(widget).not.toContain("/img");
+	});
 
-		const compareVm = buildCompareVM({});
-
-		const settingsVm = buildSettingsVM({
-			config: DEFAULT_CONFIG,
-			scope: "project",
-			activeSectionIndex: 0,
-			activeFieldIndex: 0,
-		});
-
-		for (const tab of [1, 2, 3, 4, 5] as const) {
-			const studioVm = buildStudioVM({
-				activeTab: tab,
-				compose: composeVm,
-				gallery: galleryVm,
-				queueTab: queueTabVm,
-				compare: compareVm,
-				settings: settingsVm,
-			});
-			const lines = renderStudioScreen(studioVm, 84, PLAIN_THEME);
-			expect(lines.length).toBeGreaterThan(6);
-		}
-
-		// Modals: model_picker, tile_preview, pbr_grid, help
-		const pickerVm = buildModelPickerVM({
-			models: [
-				{
-					id: "fal/flux-pro-v1.1",
-					provider: "fal",
-					label: "FLUX 1.1 Pro",
-					caps: new Set(["txt2img", "seed", "steps", "arbitrary_size"]),
-					sizes: { kind: "multiple", step: 16, min: 256, max: 2048 },
-					maxRefs: 0,
-					maxCount: 4,
-					costPerImageUsd: 0.04,
-					hasKey: true,
-				},
-			],
-			filter: "flux",
-			selectedIndex: 0,
-		});
-		const modalStudio = buildStudioVM({
-			activeTab: 1,
-			modal: "model_picker",
-			compose: composeVm,
-			gallery: galleryVm,
-			queueTab: queueTabVm,
-			compare: compareVm,
-			settings: settingsVm,
-			modelPicker: pickerVm,
-		});
-		const pickerLines = renderStudioScreen(modalStudio, 80, PLAIN_THEME);
-		expect(pickerLines.join("\n")).toContain("choose model");
-		expect(pickerLines.join("\n")).toContain("flux-pro-v1.1");
-
-		const tileVm = buildTilePreviewVM({
-			filename: "cobble_albedo.png",
-			seamScore: 3.1,
-			availableMaps: ["albedo", "normal", "roughness", "ao", "height"],
-			activeMap: "albedo",
-			tiles: 2,
-			showGrid: true,
-		});
-		const tileLines = renderTilePreview(tileVm, 80, PLAIN_THEME);
-		expect(tileLines.join("\n")).toContain("seam score 3.1 (good < 6)");
-
-		const pbrVm = buildPbrGridVM({
-			materialName: "mossy-cobblestone",
-			resolution: 1024,
-			normalConvention: "opengl",
-			maps: ["albedo", "normal", "roughness", "ao", "height"],
-			hasBlender: true,
-		});
-		const pbrLines = renderPbrGrid(pbrVm, 80, PLAIN_THEME);
-		expect(pbrLines.join("\n")).toContain("material.json");
-		expect(pbrLines.join("\n")).toContain("open in Blender");
-
-		const statusVm = buildStatusSegmentVM({
-			snapshot: snap,
-			defaultModelLabel: "openai/gpt-image-1",
+	test("HUD: idle status shows the resolved host model; queue widget hidden until jobs exist", () => {
+		const snapshot = new JobQueue(DEFAULT_CONFIG).snapshot();
+		const status = buildStatusSegmentVM({
+			snapshot,
+			defaultModelLabel: "Gemini Image",
 			spinnerTick: 0,
-			nowMs: 1000,
+			nowMs: 0,
+			noColor: true,
 		});
-		expect(statusVm.text).toContain("gpt-image-1");
-
-		const qWidgetVm = buildQueueWidgetVM({
-			snapshot: snap,
-			nowMs: 1000,
-			spinnerTick: 0,
-		});
-		expect(renderQueueWidget(qWidgetVm, 80, PLAIN_THEME)).toEqual([]);
-
-		expect(renderKeyHints([{ key: "⏎", label: "generate" }], PLAIN_THEME)).toContain("generate");
+		expect(status.text).toBe("img:Gemini Image");
+		const widget = buildQueueWidgetVM({ snapshot, nowMs: 0, spinnerTick: 0, noColor: true });
+		expect(widget.visible).toBe(false);
+		expect(renderQueueWidget(widget, 80, PLAIN_THEME).every(line => typeof line === "string")).toBe(true);
 	});
 
 	test("SharedTicker runs only while jobs are active, and DurationStatsStore + JobQueue work", async () => {

@@ -1,6 +1,5 @@
 import type { ImgError } from "../core/errors.js";
 import type { Result } from "../core/result.js";
-import type { Size } from "../domain/size.js";
 
 export type HostKind = "omp" | "pi";
 
@@ -23,39 +22,24 @@ export interface TuiHandleLike {
 	requestRender(): void;
 }
 
+/** Overlay sizing forwarded to the host `showOverlay` (both hosts share these fields). */
 export interface OverlayOptionsLike {
 	readonly width?: number | string;
 	readonly maxHeight?: number | string;
-	readonly anchor?: "center";
-	readonly fullscreen?: boolean;
 }
 
-export interface CustomOverlayOptions {
-	readonly overlay?: boolean;
-	readonly overlayOptions?: OverlayOptionsLike;
-	readonly signal?: AbortSignal;
-}
+export type CustomComponentFactory<T> = (
+	tui: TuiHandleLike,
+	theme: PortableTheme,
+	done: (result: T) => void,
+) => ComponentLike;
 
 export interface PortableUIContext {
-	select(
-		title: string,
-		options: readonly string[],
-		opts?: { readonly initialIndex?: number },
-	): Promise<string | undefined>;
-	confirm(title: string, message: string): Promise<boolean>;
-	input(title: string, placeholder?: string): Promise<string | undefined>;
 	notify(message: string, type?: "info" | "warning" | "error"): void;
 	setStatus(key: string, text: string | undefined): void;
-	setWorkingMessage(message?: string): void;
 	setWidget(key: string, lines: readonly string[] | undefined): void;
-	custom<T>(
-		factory: (
-			tui: TuiHandleLike,
-			theme: PortableTheme,
-			done: (result: T) => void,
-		) => ComponentLike | Promise<ComponentLike>,
-		options?: CustomOverlayOptions,
-	): Promise<T | undefined>;
+	/** Shows a component as an overlay until it calls `done`; `undefined` when the host has no UI. */
+	custom<T>(factory: CustomComponentFactory<T>, overlay?: OverlayOptionsLike): Promise<T | undefined>;
 }
 
 export interface PortableCtx {
@@ -67,14 +51,26 @@ export interface PortableCtx {
 	readonly raw: unknown;
 }
 
-export interface NativeImageModel {
+/**
+ * Request knobs a host's image transport honors. A fact about the host API, never a
+ * per-model guess: omp `ImageGenerationRequest` carries `aspectRatio`/`imageSize`;
+ * pi `ImagesContext` carries only `input`.
+ */
+export interface HostImageOptions {
+	readonly aspectRatio: boolean;
+	readonly imageSize: boolean;
+}
+
+/** An image model the host reports as available (authenticated) in this session. */
+export interface HostImageModel {
+	/** `${provider}/${modelId}`, the host's canonical selector. */
 	readonly id: string;
 	readonly provider: string;
-	readonly modelId: string;
+	readonly providerLabel: string;
 	readonly label: string;
-	readonly api: string;
-	readonly hasKey: boolean;
-	readonly costHint?: string;
+	/** Model accepts input images (edit / references), from the host's `input` modalities. */
+	readonly acceptsImages: boolean;
+	readonly options: HostImageOptions;
 }
 
 export interface NativeInputImage {
@@ -88,7 +84,6 @@ export interface NativeRequest {
 	readonly inputImages?: readonly NativeInputImage[];
 	readonly aspectRatio?: string;
 	readonly imageSize?: string;
-	readonly count?: number;
 }
 
 export interface NativeGeneratedImage {
@@ -114,18 +109,10 @@ export interface ImageBytes {
 	readonly mimeType: string;
 }
 
-export interface ImageBudgetLike {
-	readonly cap: number;
-	readonly raw: unknown;
-}
-
 export interface ImageRenderOpts {
 	readonly maxWidthCells?: number;
 	readonly maxHeightCells?: number;
 	readonly filename?: string;
-	readonly sourcePath?: string;
-	readonly budget?: ImageBudgetLike;
-	readonly fallbackLines?: readonly string[];
 }
 
 export type AgentToolContentItem =
@@ -145,11 +132,22 @@ export interface PortableRenderResultOpts {
 	readonly isPartial: boolean;
 }
 
+export type ToolApproval = "read" | "write";
+
+/** Renders an image inline through the host TUI `Image` component (text fallback outside a TUI). */
+export type ImageComponentFactory = (data: ImageBytes, theme: PortableTheme, opts?: ImageRenderOpts) => ComponentLike;
+
 export interface PortableTool<P, D> {
 	readonly name: string;
 	readonly label: string;
 	readonly description: string;
 	readonly parameters: Readonly<Record<string, unknown>>;
+	/** Always visible to the agent (omp `loadMode: "essential"`); otherwise discoverable. */
+	readonly essential?: boolean;
+	readonly approval?: ToolApproval;
+	/** One line for pi's "Available tools" prompt section (pi omits custom tools without it). */
+	readonly promptSnippet?: string;
+	readonly promptGuidelines?: readonly string[];
 	execute(
 		toolCallId: string,
 		params: P,
@@ -171,20 +169,10 @@ export interface PortableCommand {
 	handler(args: string, ctx: PortableCtx): Promise<void>;
 }
 
-export interface PortableShortcut {
-	readonly description: string;
-	handler(ctx: PortableCtx): Promise<void>;
-}
-
 export interface PortableFlag {
 	readonly description: string;
 	readonly type: "string" | "boolean";
 	readonly default?: string | boolean;
-}
-
-export interface ToolCallPrecheckResult {
-	readonly block?: boolean;
-	readonly reason?: string;
 }
 
 export interface HostPort {
@@ -192,21 +180,18 @@ export interface HostPort {
 	readonly agentDir: string;
 	readonly projectDirName: ".omp" | ".pi";
 	registerTool<P, D>(def: PortableTool<P, D>): void;
-	registerCommand(name: string, spec: PortableCommand): void;
-	registerShortcut(key: string, spec: PortableShortcut): void;
 	registerFlag(name: string, spec: PortableFlag): void;
+	registerCommand(name: string, spec: PortableCommand): void;
+	/** Normalized key name from the host TUI (`"up"`, `"enter"`, `"shift+tab"`, …). */
+	parseKey(data: string): string | undefined;
 	getFlag(name: string): string | boolean | undefined;
 	onSessionStart(fn: (ctx: PortableCtx) => void | Promise<void>): void;
 	onSessionShutdown(fn: () => void | Promise<void>): void;
-	onToolCall(
-		fn: (toolName: string, args: unknown, ctx: PortableCtx) => Promise<ToolCallPrecheckResult | undefined>,
-	): void;
-	createImageBudget(cap: number, requestRender: () => void): ImageBudgetLike | undefined;
-	hasGraphicsSupport(ctx: PortableCtx): boolean;
-	imageComponent(data: ImageBytes, theme: PortableTheme, opts?: ImageRenderOpts, dims?: Size): ComponentLike;
-	imageDims(data: ImageBytes): Size | undefined;
+	readonly imageComponent: ImageComponentFactory;
+	/** Image model the host session prefers (e.g. omp session model's `imageModel`), if any. */
 	configuredImageModel(ctx: PortableCtx): string | undefined;
-	nativeImageModels(ctx: PortableCtx): readonly NativeImageModel[];
+	/** Available image models, sorted: session provider first, then provider label, then label. */
+	nativeImageModels(ctx: PortableCtx): Promise<Result<readonly HostImageModel[], ImgError>>;
 	generateNative(ctx: PortableCtx, req: NativeRequest, signal: AbortSignal): Promise<Result<NativeResponse, ImgError>>;
 	deactivateBuiltinImageTool?(): void;
 	logError(msg: string, err?: unknown): void;

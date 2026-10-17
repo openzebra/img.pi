@@ -11,7 +11,6 @@ import type { Size } from "../domain/size.js";
 import { atomicWriteJson } from "../storage/writer.js";
 
 const DEFAULT_TAU_MS = 12_000;
-const MOCK_TAU_MS = 400;
 const EWMA_ALPHA = 0.3;
 const MAX_INCOMPLETE_FRACTION = 0.95;
 
@@ -62,9 +61,6 @@ export class DurationStatsStore {
 		const exact = this.table.get(key);
 		if (exact !== undefined && exact > 50) {
 			return exact;
-		}
-		if (provider === "mock" || model.startsWith("mock/")) {
-			return MOCK_TAU_MS;
 		}
 		return DEFAULT_TAU_MS;
 	}

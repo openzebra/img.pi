@@ -1,35 +1,48 @@
 import type { PortableTheme } from "../../host/port.js";
 import { getCircledNumber, getGlyphs, getSpinnerFrame } from "../glyphs.js";
 import { fitVisibleLine, padEndVisible, renderRoundBox, truncatePlain, visibleWidth } from "../theme.js";
-import type { CallVM, JobCardVM } from "../view-models.js";
+import type { CallVM, JobCardVM, NoteVM } from "../view-models.js";
 import { renderKvTable } from "./kv-table.js";
 import { renderPhaseStepper, renderProgressBar } from "./progress-bar.js";
 import { renderFramedThumbBox, renderThumbStrip } from "./thumb-strip.js";
 
 export function renderCallCard(vm: CallVM, width: number, theme: PortableTheme): string[] {
 	const g = getGlyphs(vm.noColor);
+	const paramsLine = vm.params.join(` ${g.bullet} `);
 	if (width < 60) {
-		const line1 = `${g.queued} ${vm.modelLabel} ${vm.sizeLabel}`;
-		const line2 = truncatePlain(`"${vm.prompt}"`, Math.max(10, width));
-		return [fitVisibleLine(line1, width), fitVisibleLine(line2, width)];
+		const lines = [
+			fitVisibleLine(`${g.queued} ${vm.toolName}`, width),
+			fitVisibleLine(truncatePlain(`"${vm.prompt}"`, Math.max(10, width)), width),
+		];
+		return paramsLine.length > 0 ? [...lines, fitVisibleLine(paramsLine, width)] : lines;
 	}
-
-	const headerLeft = `${theme.fg("muted", g.queued)} ${theme.bold(vm.toolName)}`;
-	const headerRight = theme.fg("muted", "queued #1");
 	const innerW = Math.max(20, width - 4);
-	const bodyLines = [
-		`"${truncatePlain(vm.prompt, Math.max(10, innerW - 2))}"`,
-		theme.fg(
-			"muted",
-			`${vm.modelLabel} ${g.bullet} ${vm.sizeLabel} ${g.bullet} ×${vm.count} ${g.bullet} ${vm.format} ${g.arrowRight} ${vm.outputDir}`,
-		),
-	];
-
+	const bodyLines = [`"${truncatePlain(vm.prompt, Math.max(10, innerW - 2))}"`];
+	if (paramsLine.length > 0) {
+		bodyLines.push(theme.fg("muted", paramsLine));
+	}
 	return renderRoundBox({
-		headerLeft,
-		headerRight,
+		headerLeft: `${theme.fg("muted", g.queued)} ${theme.bold(vm.toolName)}`,
 		bodyLines,
-		footerRight: "esc cancel",
+		width,
+		theme,
+		noColor: vm.noColor,
+	});
+}
+
+const NOTE_TONE_COLOR = Object.freeze({ done: "success", failed: "error", cancelled: "muted" } as const);
+
+export function renderNoteCard(vm: NoteVM, width: number, theme: PortableTheme): string[] {
+	const g = getGlyphs(vm.noColor);
+	const color = NOTE_TONE_COLOR[vm.tone];
+	const innerW = Math.max(20, width - 4);
+	const bodyLines = vm.lines.map(line => {
+		const clipped = truncatePlain(line, innerW);
+		return vm.tone === "failed" ? theme.fg("error", clipped) : clipped;
+	});
+	return renderRoundBox({
+		headerLeft: `${theme.fg(color, g[vm.tone])} ${theme.bold(vm.toolName)}`,
+		bodyLines,
 		width,
 		theme,
 		noColor: vm.noColor,
@@ -168,17 +181,18 @@ export function renderJobCard(vm: JobCardVM, width: number, theme: PortableTheme
 	if (vm.phase === "failed") {
 		const headerLeft = `${theme.fg("error", g.failed)} ${theme.bold(vm.toolName)}`;
 		const headerRight = vm.stopwatch;
-		const errLine = theme.fg("error", vm.errorSummary ?? "Generation failed");
-		const sugLine = vm.errorSuggestion ?? "→ retry or switch model with /img:model";
-		const savedLeft = `request saved: ${vm.failedSavePath ?? `.img-pi/failed/${vm.shortId}.json`}`;
-		const retryRight = `${theme.fg("accent", "r")} ${theme.fg("muted", "retry")}`;
-		const gap = Math.max(2, innerW - visibleWidth(savedLeft) - visibleWidth(retryRight));
-		const savedLine = `${theme.fg("muted", savedLeft)}${" ".repeat(gap)}${retryRight}`;
+		const bodyLines = [theme.fg("error", vm.errorSummary ?? "Generation failed")];
+		if (vm.errorSuggestion !== undefined) {
+			bodyLines.push(vm.errorSuggestion);
+		}
+		if (vm.failedSavePath !== undefined) {
+			bodyLines.push(theme.fg("muted", `request saved: ${vm.failedSavePath}`));
+		}
 
 		return renderRoundBox({
 			headerLeft,
 			headerRight,
-			bodyLines: [errLine, sugLine, savedLine],
+			bodyLines,
 			width,
 			theme,
 			noColor: vm.noColor,

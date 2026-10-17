@@ -7,6 +7,7 @@ import type { Result } from "../core/result.js";
 import { ok, tryAsync } from "../core/result.js";
 import type { ArtifactSummary, SidecarDocument } from "../domain/artifact.js";
 import { Artifact } from "../domain/artifact.js";
+import { failedRequestRelPath } from "../domain/artifact-paths.js";
 import type { NormalConvention, TextureMapKind } from "../domain/texture.js";
 
 export async function atomicWriteBytes(targetPath: string, bytes: Uint8Array): Promise<Result<void, ImgError>> {
@@ -162,7 +163,7 @@ export async function saveFailedJobRequest(
 	requestData: unknown,
 	errorData: unknown,
 ): Promise<Result<string, ImgError>> {
-	const relPath = `.img-pi/failed/${jobId}.json`;
+	const relPath = failedRequestRelPath(jobId);
 	const absPath = path.resolve(cwd, relPath);
 	const res = await atomicWriteJson(absPath, {
 		jobId,

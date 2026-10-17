@@ -1,8 +1,10 @@
 node_modules/
 dist/
-.img-pi/
+.pi/img/
+.test-dist/
 generated/
 *.tgz
 *.log
 .DS_Store
 .rlm/
+.omp/
